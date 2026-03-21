@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Character, PlayMember, Recording, Reaction } from '../types';
+import { api } from '../lib/api';
 
 interface CastState {
   characters: Record<string, Character>;
@@ -136,8 +137,18 @@ export const useCastStore = create<CastState>((set, get) => ({
     return Object.values(recordings).filter((r) => r.line_id === lineId);
   },
 
-  fetchCast: async (_playId: string) => {
-    // TODO: Fetch from API
+  fetchCast: async (playId: string) => {
+    try {
+      const characters = await api<Character[]>(`/plays/${playId}/characters`);
+      set((state) => ({
+        characters: {
+          ...state.characters,
+          ...Object.fromEntries(characters.map((c) => [c.id, c])),
+        },
+      }));
+    } catch (err) {
+      console.error('Failed to fetch cast:', err);
+    }
   },
 
   fetchRecordings: async (_lineId: string) => {

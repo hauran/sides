@@ -1,38 +1,36 @@
 import { Router, Request, Response } from "express";
-import pool from "../db/index.js";
+import supabase from "../db/index.js";
 import { authMiddleware } from "../middleware/auth.js";
 
 const router = Router();
 
-/**
- * GET /api/lines/:lineId/recordings
- * Get recordings for a line.
- */
+// GET /api/lines/:lineId/recordings
 router.get("/lines/:lineId/recordings", authMiddleware, async (req: Request, res: Response) => {
   try {
     const { lineId } = req.params;
 
-    const result = await pool.query(
-      `SELECT r.id, r.line_id, r.recorded_by, r.audio_uri, r.recorded_at,
-              u.name AS recorded_by_name, u.avatar_uri AS recorded_by_avatar
-       FROM recordings r
-       INNER JOIN users u ON u.id = r.recorded_by
-       WHERE r.line_id = $1
-       ORDER BY r.recorded_at DESC`,
-      [lineId]
-    );
+    const { data, error } = await supabase
+      .from("recordings")
+      .select("id, line_id, recorded_by, audio_uri, recorded_at, users(name, avatar_uri)")
+      .eq("line_id", lineId)
+      .order("recorded_at", { ascending: false });
+    if (error) throw error;
 
-    res.json(result.rows);
+    const result = (data ?? []).map((r) => ({
+      ...r,
+      recorded_by_name: (r.users as any)?.name ?? null,
+      recorded_by_avatar: (r.users as any)?.avatar_uri ?? null,
+      users: undefined,
+    }));
+
+    res.json(result);
   } catch (err) {
     console.error("Error listing recordings:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-/**
- * POST /api/recordings
- * Create a recording for a line.
- */
+// POST /api/recordings
 router.post("/", authMiddleware, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -43,21 +41,25 @@ router.post("/", authMiddleware, async (req: Request, res: Response) => {
       return;
     }
 
-    // Verify the line exists
-    const lineCheck = await pool.query("SELECT id FROM lines WHERE id = $1", [line_id]);
-    if (lineCheck.rows.length === 0) {
+    // Verify line exists
+    const { data: line, error: lineErr } = await supabase
+      .from("lines")
+      .select("id")
+      .eq("id", line_id)
+      .single();
+    if (lineErr || !line) {
       res.status(404).json({ error: "Line not found" });
       return;
     }
 
-    const result = await pool.query(
-      `INSERT INTO recordings (line_id, recorded_by, audio_uri)
-       VALUES ($1, $2, $3)
-       RETURNING id, line_id, recorded_by, audio_uri, recorded_at`,
-      [line_id, userId, audio_uri]
-    );
+    const { data, error } = await supabase
+      .from("recordings")
+      .insert({ line_id, recorded_by: userId, audio_uri })
+      .select()
+      .single();
+    if (error) throw error;
 
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(data);
   } catch (err) {
     console.error("Error creating recording:", err);
     res.status(500).json({ error: "Internal server error" });

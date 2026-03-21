@@ -7,7 +7,6 @@
     "icon": "./assets/icon.png",
     "scheme": "sides",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -31,7 +30,8 @@
       "bundler": "metro"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      "expo-audio"
     ]
   }
 }

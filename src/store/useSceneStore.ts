@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Scene, Line } from '../types';
+import { api } from '../lib/api';
 
 interface SceneState {
   scenes: Record<string, Scene>;
@@ -104,11 +105,31 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       .sort((a, b) => a.sort - b.sort);
   },
 
-  fetchScenes: async (_playId: string) => {
-    // TODO: Fetch from API
+  fetchScenes: async (playId: string) => {
+    try {
+      const scenes = await api<Scene[]>(`/plays/${playId}/scenes`);
+      set((state) => ({
+        scenes: {
+          ...state.scenes,
+          ...Object.fromEntries(scenes.map((s) => [s.id, s])),
+        },
+      }));
+    } catch (err) {
+      console.error('Failed to fetch scenes:', err);
+    }
   },
 
-  fetchLines: async (_sceneId: string) => {
-    // TODO: Fetch from API
+  fetchLines: async (sceneId: string) => {
+    try {
+      const lines = await api<Line[]>(`/scenes/${sceneId}/lines`);
+      set((state) => ({
+        lines: {
+          ...state.lines,
+          ...Object.fromEntries(lines.map((l) => [l.id, l])),
+        },
+      }));
+    } catch (err) {
+      console.error('Failed to fetch lines:', err);
+    }
   },
 }));

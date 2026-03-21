@@ -8,6 +8,7 @@ import linesRoutes from "./routes/lines.js";
 import charactersRoutes from "./routes/characters.js";
 import recordingsRoutes from "./routes/recordings.js";
 import usersRoutes from "./routes/users.js";
+import ttsRoutes from "./routes/tts.js";
 
 const app = express();
 
@@ -28,6 +29,7 @@ app.use("/api", linesRoutes);    // /api/scenes/:sceneId/lines and /api/lines/:i
 app.use("/api", charactersRoutes); // /api/plays/:playId/characters
 app.use("/api", recordingsRoutes); // /api/lines/:lineId/recordings and /api/recordings
 app.use("/api/users", usersRoutes);
+app.use("/api/tts", ttsRoutes);
 
 // 404 handler
 app.use((_req, res) => {

@@ -3,9 +3,7 @@ import { useSettingsStore } from '../../src/store/useSettingsStore';
 
 export default function SettingsScreen() {
   const displayName = useSettingsStore((s) => s.displayName);
-  const elevenLabsApiKey = useSettingsStore((s) => s.elevenLabsApiKey);
   const setDisplayName = useSettingsStore((s) => s.setDisplayName);
-  const setElevenLabsApiKey = useSettingsStore((s) => s.setElevenLabsApiKey);
   const saveSettings = useSettingsStore((s) => s.saveSettings);
 
   const handleSave = async () => {
@@ -28,23 +26,6 @@ export default function SettingsScreen() {
           autoCapitalize="words"
           autoCorrect={false}
         />
-      </View>
-
-      <View style={styles.field}>
-        <Text style={styles.label}>ElevenLabs API Key</Text>
-        <TextInput
-          style={styles.input}
-          value={elevenLabsApiKey}
-          onChangeText={setElevenLabsApiKey}
-          placeholder="sk-..."
-          placeholderTextColor="#BBBBBB"
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        <Text style={styles.hint}>
-          Used for AI-voiced scene partners. Get one at elevenlabs.io
-        </Text>
       </View>
 
       <Pressable style={styles.saveButton} onPress={handleSave}>
@@ -96,12 +77,6 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 16,
     color: '#1A1A2E',
-  },
-  hint: {
-    fontSize: 12,
-    color: '#999999',
-    marginTop: 4,
-    paddingLeft: 2,
   },
   saveButton: {
     backgroundColor: '#534AB7',

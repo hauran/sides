@@ -1,6 +1,14 @@
-import pg from "pg";
+import { createClient } from "@supabase/supabase-js";
 
-const { Pool } = pg;
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!supabaseUrl || !supabaseServiceKey) {
+  console.error("Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your environment");
+  process.exit(1);
+}
+
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 const SEED_LINES = [
   { character: "ROMEO",  text: "But, soft! what light through yonder window breaks? It is the east, and Juliet is the sun.", sort: 1 },
@@ -22,96 +30,66 @@ const SEED_LINES = [
 ];
 
 async function seed() {
-  const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : undefined,
-  });
+  // 1. Look up existing user
+  const { data: user, error: userErr } = await supabase
+    .from("users")
+    .select("id")
+    .eq("email", "richardmai@gmail.com")
+    .single();
+  if (userErr) throw userErr;
+  console.log(`Found user: ${user.id}`);
 
-  const client = await pool.connect();
+  // 2. Create the Romeo & Juliet play
+  const { data: play, error: playErr } = await supabase
+    .from("plays")
+    .insert({ title: "Romeo & Juliet", created_by: user.id, script_type: "pdf" })
+    .select("id")
+    .single();
+  if (playErr) throw playErr;
+  console.log(`Created play: ${play.id}`);
 
-  try {
-    await client.query("BEGIN");
+  // 3. Create characters
+  const { data: characters, error: charErr } = await supabase
+    .from("characters")
+    .insert([
+      { play_id: play.id, name: "ROMEO" },
+      { play_id: play.id, name: "JULIET" },
+    ])
+    .select("id, name");
+  if (charErr) throw charErr;
+  const charMap: Record<string, string> = {};
+  for (const c of characters) charMap[c.name] = c.id;
+  console.log(`Created characters: ROMEO (${charMap.ROMEO}), JULIET (${charMap.JULIET})`);
 
-    // 1. Create seed user
-    const userResult = await client.query(
-      `INSERT INTO users (name, avatar_uri)
-       VALUES ($1, $2)
-       RETURNING id`,
-      ["Seed User", null]
-    );
-    const userId = userResult.rows[0].id;
-    console.log(`Created seed user: ${userId}`);
+  // 4. Create scene
+  const { data: scene, error: sceneErr } = await supabase
+    .from("scenes")
+    .insert({ play_id: play.id, name: "Act II, Scene II \u2014 The Balcony", sort: 1 })
+    .select("id")
+    .single();
+  if (sceneErr) throw sceneErr;
+  console.log(`Created scene: ${scene.id}`);
 
-    // 2. Create the Romeo & Juliet play
-    const playResult = await client.query(
-      `INSERT INTO plays (title, created_by, script_type, script_uri)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id`,
-      ["Romeo & Juliet", userId, "pdf", null]
-    );
-    const playId = playResult.rows[0].id;
-    console.log(`Created play: ${playId}`);
+  // 5. Create lines
+  const lineRows = SEED_LINES.map((l) => ({
+    scene_id: scene.id,
+    character_id: charMap[l.character],
+    text: l.text,
+    type: "dialogue" as const,
+    sort: l.sort,
+  }));
+  const { error: linesErr } = await supabase.from("lines").insert(lineRows);
+  if (linesErr) throw linesErr;
+  console.log(`Created ${SEED_LINES.length} lines`);
 
-    // 3. Create ROMEO and JULIET characters
-    const romeoResult = await client.query(
-      `INSERT INTO characters (play_id, name)
-       VALUES ($1, $2)
-       RETURNING id`,
-      [playId, "ROMEO"]
-    );
-    const romeoId = romeoResult.rows[0].id;
+  // 6. Add seed user as PlayMember playing ROMEO
+  const { error: memberErr } = await supabase
+    .from("play_members")
+    .insert({ play_id: play.id, user_id: user.id, character_id: charMap.ROMEO });
+  if (memberErr) throw memberErr;
+  console.log("Added seed user as PlayMember (ROMEO)");
 
-    const julietResult = await client.query(
-      `INSERT INTO characters (play_id, name)
-       VALUES ($1, $2)
-       RETURNING id`,
-      [playId, "JULIET"]
-    );
-    const julietId = julietResult.rows[0].id;
-    console.log(`Created characters: ROMEO (${romeoId}), JULIET (${julietId})`);
-
-    // 4. Create Act II Scene II
-    const sceneResult = await client.query(
-      `INSERT INTO scenes (play_id, name, sort)
-       VALUES ($1, $2, $3)
-       RETURNING id`,
-      [playId, "Act II, Scene II \u2014 The Balcony", 1]
-    );
-    const sceneId = sceneResult.rows[0].id;
-    console.log(`Created scene: ${sceneId}`);
-
-    // 5. Create all 16 lines
-    const characterMap: Record<string, string> = {
-      ROMEO: romeoId,
-      JULIET: julietId,
-    };
-
-    for (const line of SEED_LINES) {
-      await client.query(
-        `INSERT INTO lines (scene_id, character_id, text, type, sort)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [sceneId, characterMap[line.character], line.text, "dialogue", line.sort]
-      );
-    }
-    console.log(`Created ${SEED_LINES.length} lines`);
-
-    // 6. Add seed user as a PlayMember
-    await client.query(
-      `INSERT INTO play_members (play_id, user_id, character_id)
-       VALUES ($1, $2, $3)`,
-      [playId, userId, romeoId]
-    );
-    console.log(`Added seed user as PlayMember (ROMEO)`);
-
-    await client.query("COMMIT");
-    console.log("Seed complete!");
-  } catch (err) {
-    await client.query("ROLLBACK");
-    throw err;
-  } finally {
-    client.release();
-    await pool.end();
-  }
+  console.log("Seed complete!");
 }
 
 seed().catch((err) => {

@@ -4,21 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "source ../etc/env.local && tsx watch src/index.ts",
     "build": "tsc",
-    "seed": "tsx src/db/seed.ts",
-    "migrate": "tsx src/db/migrate.ts"
+    "seed": "source ../etc/env.local && tsx src/db/seed.ts"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.99.3",
     "cors": "^2.8.5",
-    "express": "^4.21.2",
-    "pg": "^8.13.1"
+    "express": "^4.21.2"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.0",
-    "@types/pg": "^8.11.10",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

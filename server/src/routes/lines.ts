@@ -1,38 +1,35 @@
 import { Router, Request, Response } from "express";
-import pool from "../db/index.js";
+import supabase from "../db/index.js";
 import { authMiddleware } from "../middleware/auth.js";
 
 const router = Router();
 
-/**
- * GET /api/scenes/:sceneId/lines
- * List lines for a scene, ordered by sort.
- */
+// GET /api/scenes/:sceneId/lines
 router.get("/scenes/:sceneId/lines", authMiddleware, async (req: Request, res: Response) => {
   try {
     const { sceneId } = req.params;
 
-    const result = await pool.query(
-      `SELECT l.id, l.scene_id, l.character_id, l.text, l.type, l.sort, l.edited,
-              c.name AS character_name
-       FROM lines l
-       LEFT JOIN characters c ON c.id = l.character_id
-       WHERE l.scene_id = $1
-       ORDER BY l.sort`,
-      [sceneId]
-    );
+    const { data: lines, error } = await supabase
+      .from("lines")
+      .select("id, scene_id, character_id, text, type, sort, edited, characters(name)")
+      .eq("scene_id", sceneId)
+      .order("sort");
+    if (error) throw error;
 
-    res.json(result.rows);
+    const result = (lines ?? []).map((l) => ({
+      ...l,
+      character_name: (l.characters as any)?.name ?? null,
+      characters: undefined,
+    }));
+
+    res.json(result);
   } catch (err) {
     console.error("Error listing lines:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-/**
- * PATCH /api/lines/:id
- * Update line text. Sets edited=true.
- */
+// PATCH /api/lines/:id — update line text
 router.patch("/lines/:id", authMiddleware, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -43,20 +40,19 @@ router.patch("/lines/:id", authMiddleware, async (req: Request, res: Response) =
       return;
     }
 
-    const result = await pool.query(
-      `UPDATE lines
-       SET text = $1, edited = true
-       WHERE id = $2
-       RETURNING id, scene_id, character_id, text, type, sort, edited`,
-      [text, id]
-    );
+    const { data, error } = await supabase
+      .from("lines")
+      .update({ text, edited: true })
+      .eq("id", id)
+      .select("id, scene_id, character_id, text, type, sort, edited")
+      .single();
 
-    if (result.rows.length === 0) {
+    if (error) {
       res.status(404).json({ error: "Line not found" });
       return;
     }
 
-    res.json(result.rows[0]);
+    res.json(data);
   } catch (err) {
     console.error("Error updating line:", err);
     res.status(500).json({ error: "Internal server error" });

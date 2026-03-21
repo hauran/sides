@@ -1,71 +1,62 @@
 import { Router, Request, Response } from "express";
-import pool from "../db/index.js";
+import supabase from "../db/index.js";
 import { authMiddleware } from "../middleware/auth.js";
 
 const router = Router();
 
-/**
- * GET /api/plays/:playId/scenes
- * List scenes for a play, ordered by sort.
- */
+// GET /api/plays/:playId/scenes — list scenes for a play
 router.get("/plays/:playId/scenes", authMiddleware, async (req: Request, res: Response) => {
   try {
     const { playId } = req.params;
 
-    const result = await pool.query(
-      `SELECT s.id, s.play_id, s.name, s.sort,
-              COUNT(l.id)::int AS line_count
-       FROM scenes s
-       LEFT JOIN lines l ON l.scene_id = s.id
-       WHERE s.play_id = $1
-       GROUP BY s.id
-       ORDER BY s.sort`,
-      [playId]
-    );
+    const { data: scenes, error } = await supabase
+      .from("scenes")
+      .select("id, play_id, name, sort")
+      .eq("play_id", playId)
+      .order("sort");
+    if (error) throw error;
 
-    res.json(result.rows);
+    res.json(scenes ?? []);
   } catch (err) {
     console.error("Error listing scenes:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-/**
- * GET /api/scenes/:id
- * Get a scene with all its lines (and their characters).
- */
+// GET /api/scenes/:id — get a scene with its lines
 router.get("/scenes/:id", authMiddleware, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const sceneResult = await pool.query(
-      `SELECT id, play_id, name, sort
-       FROM scenes
-       WHERE id = $1`,
-      [id]
-    );
-
-    if (sceneResult.rows.length === 0) {
+    const { data: scene, error: sceneErr } = await supabase
+      .from("scenes")
+      .select("id, play_id, name, sort")
+      .eq("id", id)
+      .single();
+    if (sceneErr) {
       res.status(404).json({ error: "Scene not found" });
       return;
     }
 
-    const scene = sceneResult.rows[0];
+    const { data: lines, error: linesErr } = await supabase
+      .from("lines")
+      .select("id, scene_id, character_id, text, type, sort, edited, characters(name)")
+      .eq("scene_id", id)
+      .order("sort");
+    if (linesErr) throw linesErr;
 
-    const linesResult = await pool.query(
-      `SELECT l.id, l.scene_id, l.character_id, l.text, l.type, l.sort, l.edited,
-              c.name AS character_name
-       FROM lines l
-       LEFT JOIN characters c ON c.id = l.character_id
-       WHERE l.scene_id = $1
-       ORDER BY l.sort`,
-      [id]
-    );
+    const formattedLines = (lines ?? []).map((l) => ({
+      id: l.id,
+      scene_id: l.scene_id,
+      character_id: l.character_id,
+      text: l.text,
+      type: l.type,
+      sort: l.sort,
+      edited: l.edited,
+      character_name: (l.characters as any)?.name ?? null,
+    }));
 
-    res.json({
-      ...scene,
-      lines: linesResult.rows,
-    });
+    res.json({ ...scene, lines: formattedLines });
   } catch (err) {
     console.error("Error getting scene:", err);
     res.status(500).json({ error: "Internal server error" });

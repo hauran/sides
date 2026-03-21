@@ -1,5 +1,6 @@
 export interface User {
   id: string;
+  email: string;
   name: string;
   avatar_uri: string | null;
   created_at: string;
@@ -44,6 +45,7 @@ export interface Line {
   id: string;
   scene_id: string;
   character_id: string | null;
+  character_name?: string | null;
   text: string;
   type: 'dialogue' | 'stage_direction';
   sort: number;

@@ -1,18 +1,46 @@
-import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, Pressable, ScrollView } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { usePlayStore } from '../../../src/store/usePlayStore';
-import { useSceneStore } from '../../../src/store/useSceneStore';
-import { useCastStore } from '../../../src/store/useCastStore';
+import { useUserStore } from '../../../src/store/useUserStore';
+import { api } from '../../../src/lib/api';
+
+interface PlayDetail {
+  id: string;
+  title: string;
+  script_type: string;
+  characters: { id: string; name: string }[];
+  scenes: { id: string; name: string; sort: number }[];
+  members: {
+    user_id: string;
+    character_id: string | null;
+    user_name: string;
+    avatar_uri: string | null;
+    character_name: string | null;
+  }[];
+}
+
+function getInitials(name: string): string {
+  return name
+    .split(' ')
+    .map((w) => w[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2);
+}
 
 export default function PlayDetailScreen() {
   const { playId } = useLocalSearchParams<{ playId: string }>();
   const router = useRouter();
   const play = usePlayStore((s) => (playId ? s.plays[playId] : undefined));
-  const getScenesForPlay = useSceneStore((s) => s.getScenesForPlay);
-  const getCharactersForPlay = useCastStore((s) => s.getCharactersForPlay);
+  const currentUser = useUserStore((s) => s.currentUser);
+  const [detail, setDetail] = useState<PlayDetail | null>(null);
 
-  const scenes = playId ? getScenesForPlay(playId) : [];
-  const characters = playId ? getCharactersForPlay(playId) : [];
+  useEffect(() => {
+    if (playId) {
+      api<PlayDetail>(`/plays/${playId}`).then(setDetail).catch(console.error);
+    }
+  }, [playId]);
 
   if (!play) {
     return (
@@ -22,48 +50,74 @@ export default function PlayDetailScreen() {
     );
   }
 
+  const characters = detail?.characters ?? [];
+  const scenes = detail?.scenes ?? [];
+  const members = detail?.members ?? [];
+
+  const memberByCharacter = new Map(
+    members.filter((m) => m.character_id).map((m) => [m.character_id, m])
+  );
+
+  const myMember = members.find((m) => m.user_id === currentUser?.id);
+  const myCharacterId = myMember?.character_id ?? '';
+
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.title}>{play.title}</Text>
-      <Text style={styles.meta}>
-        {play.script_type.toUpperCase()} script
-      </Text>
+      <Text style={styles.meta}>{play.script_type.toUpperCase()} script</Text>
 
       <Text style={styles.sectionTitle}>Characters</Text>
       {characters.length === 0 ? (
-        <Text style={styles.emptyText}>
-          No characters parsed yet.
-        </Text>
+        <Text style={styles.emptyText}>No characters parsed yet.</Text>
       ) : (
         <View style={styles.list}>
-          {characters.map((c) => (
-            <View key={c.id} style={styles.characterRow}>
-              <Text style={styles.characterName}>{c.name}</Text>
-            </View>
-          ))}
+          {characters.map((c) => {
+            const member = memberByCharacter.get(c.id);
+            return (
+              <View key={c.id} style={styles.characterRow}>
+                <View style={styles.characterInfo}>
+                  <Text style={styles.characterName}>{c.name}</Text>
+                  {member ? (
+                    <Text style={styles.assignedName}>{member.user_name}</Text>
+                  ) : (
+                    <Text style={styles.unassigned}>Invite someone</Text>
+                  )}
+                </View>
+                {member ? (
+                  <View style={styles.avatar}>
+                    <Text style={styles.avatarText}>
+                      {getInitials(member.user_name)}
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={[styles.avatar, styles.avatarInvite]}>
+                    <Text style={styles.avatarInviteText}>+</Text>
+                  </View>
+                )}
+              </View>
+            );
+          })}
         </View>
       )}
 
       <Text style={styles.sectionTitle}>Scenes</Text>
       {scenes.length === 0 ? (
-        <Text style={styles.emptyText}>
-          No scenes parsed yet.
-        </Text>
+        <Text style={styles.emptyText}>No scenes parsed yet.</Text>
       ) : (
         <View style={styles.list}>
           {scenes.map((scene) => (
             <Pressable
               key={scene.id}
               style={styles.sceneCard}
-              onPress={() => router.push(`/rehearse/${scene.id}`)}
+              onPress={() => router.push(`/rehearse/${scene.id}?characterId=${myCharacterId}`)}
             >
               <Text style={styles.sceneName}>{scene.name}</Text>
-              <Text style={styles.sceneArrow}>{'\u{203A}'}</Text>
+              <Text style={styles.sceneArrow}>{'\u203A'}</Text>
             </Pressable>
           ))}
         </View>
       )}
-    </View>
+    </ScrollView>
   );
 }
 
@@ -71,8 +125,11 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#FFFFFF',
+  },
+  content: {
     paddingHorizontal: 20,
     paddingTop: 16,
+    paddingBottom: 40,
   },
   title: {
     fontSize: 26,
@@ -98,14 +155,55 @@ const styles = StyleSheet.create({
   },
   characterRow: {
     backgroundColor: '#EEEDFE',
-    borderRadius: 8,
+    borderRadius: 10,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  characterInfo: {
+    flex: 1,
+    gap: 2,
   },
   characterName: {
     fontSize: 15,
-    fontWeight: '500',
+    fontWeight: '600',
     color: '#1A1A2E',
+  },
+  assignedName: {
+    fontSize: 13,
+    color: '#534AB7',
+  },
+  unassigned: {
+    fontSize: 13,
+    color: '#BBBBBB',
+    fontStyle: 'italic',
+  },
+  avatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#534AB7',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 12,
+  },
+  avatarText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  avatarInvite: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2,
+    borderColor: '#534AB7',
+    borderStyle: 'dashed',
+  },
+  avatarInviteText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#534AB7',
   },
   sceneCard: {
     backgroundColor: '#EEEDFE',

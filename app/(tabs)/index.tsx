@@ -1,17 +1,35 @@
-import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { useEffect } from 'react';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { usePlayStore } from '../../src/store/usePlayStore';
+import { useUserStore } from '../../src/store/useUserStore';
+import { setDevUserId } from '../../src/lib/api';
+
+const DEV_USER_ID = 'a9dfc43f-eb47-4822-8348-62b5e77af5a5';
 
 export default function HomeScreen() {
   const router = useRouter();
   const plays = usePlayStore((s) => s.plays);
+  const loading = usePlayStore((s) => s.loading);
+  const fetchPlays = usePlayStore((s) => s.fetchPlays);
+  const fetchCurrentUser = useUserStore((s) => s.fetchCurrentUser);
+
+  useEffect(() => {
+    setDevUserId(DEV_USER_ID);
+    fetchCurrentUser().then(() => fetchPlays());
+  }, []);
+
   const playList = Object.values(plays);
 
   return (
     <View style={styles.container}>
       <Text style={styles.heading}>Your Plays</Text>
 
-      {playList.length === 0 ? (
+      {loading ? (
+        <View style={styles.emptyState}>
+          <ActivityIndicator size="large" color="#534AB7" />
+        </View>
+      ) : playList.length === 0 ? (
         <View style={styles.emptyState}>
           <Text style={styles.emptyIcon}>{'\u{1F3AD}'}</Text>
           <Text style={styles.emptyText}>

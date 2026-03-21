@@ -1,9 +1,11 @@
 import { create } from 'zustand';
 import type { Play } from '../types';
+import { api } from '../lib/api';
 
 interface PlayState {
   plays: Record<string, Play>;
   currentPlayId: string | null;
+  loading: boolean;
   setCurrentPlayId: (id: string | null) => void;
   setPlay: (play: Play) => void;
   setPlays: (plays: Play[]) => void;
@@ -16,6 +18,7 @@ interface PlayState {
 export const usePlayStore = create<PlayState>((set) => ({
   plays: {},
   currentPlayId: null,
+  loading: false,
 
   setCurrentPlayId: (id) => set({ currentPlayId: id }),
 
@@ -53,6 +56,16 @@ export const usePlayStore = create<PlayState>((set) => ({
     }),
 
   fetchPlays: async () => {
-    // TODO: Fetch from API
+    set({ loading: true });
+    try {
+      const plays = await api<Play[]>('/plays');
+      set({
+        plays: Object.fromEntries(plays.map((p) => [p.id, p])),
+        loading: false,
+      });
+    } catch (err) {
+      console.error('Failed to fetch plays:', err);
+      set({ loading: false });
+    }
   },
 }));

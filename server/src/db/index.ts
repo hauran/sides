@@ -1,14 +1,12 @@
-import pg from "pg";
+import { createClient } from "@supabase/supabase-js";
 
-const { Pool } = pg;
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : undefined,
-});
+if (!supabaseUrl || !supabaseServiceKey) {
+  throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
+}
 
-pool.on("error", (err) => {
-  console.error("Unexpected error on idle client", err);
-});
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-export default pool;
+export default supabase;
