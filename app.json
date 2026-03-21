@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "Sides",
+    "slug": "sides",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "sides",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#EEEDFE"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sides.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#EEEDFE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "package": "com.sides.app"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router"
+    ]
+  }
+}
