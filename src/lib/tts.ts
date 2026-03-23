@@ -1,14 +1,5 @@
 import { createAudioPlayer, AudioPlayer } from 'expo-audio';
-
-const API_URL = __DEV__
-  ? 'http://localhost:3001/api'
-  : 'https://your-production-url.vercel.app/api';
-
-let devUserId: string | null = null;
-
-export function setTtsDevUserId(id: string) {
-  devUserId = id;
-}
+import { API_URL, devUserId } from './api';
 
 export function getTtsUrl(text: string, character: string): string {
   const params = new URLSearchParams({ text, character });

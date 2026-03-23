@@ -15,7 +15,7 @@ interface PlayState {
   fetchPlays: () => Promise<void>;
 }
 
-export const usePlayStore = create<PlayState>((set) => ({
+export const usePlayStore = create<PlayState>((set, get) => ({
   plays: {},
   currentPlayId: null,
   loading: false,
@@ -56,9 +56,19 @@ export const usePlayStore = create<PlayState>((set) => ({
     }),
 
   fetchPlays: async () => {
-    set({ loading: true });
+    const hasPlays = Object.keys(get().plays).length > 0;
+    if (!hasPlays) set({ loading: true });
     try {
       const plays = await api<Play[]>('/plays');
+      // Skip state update if nothing changed (avoids unnecessary re-renders during polling)
+      const current = get().plays;
+      const fingerprint = (p: Play) => `${p.id}:${p.status ?? ''}:${p.progress ?? ''}`;
+      const currentKeys = Object.values(current).map(fingerprint).sort().join('|');
+      const incomingKeys = plays.map(fingerprint).sort().join('|');
+      if (currentKeys === incomingKeys && hasPlays) {
+        set({ loading: false });
+        return;
+      }
       set({
         plays: Object.fromEntries(plays.map((p) => [p.id, p])),
         loading: false,

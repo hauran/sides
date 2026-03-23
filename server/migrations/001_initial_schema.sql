@@ -17,6 +17,8 @@ CREATE TABLE plays (
   created_by UUID NOT NULL REFERENCES users(id),
   script_type TEXT NOT NULL CHECK (script_type IN ('pdf', 'photos')),
   script_uri TEXT,
+  status TEXT NOT NULL DEFAULT 'ready' CHECK (status IN ('processing', 'ready', 'failed')),
+  progress TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -36,12 +38,18 @@ CREATE TABLE characters (
   UNIQUE (play_id, name)
 );
 
--- Play Members
+-- Play Members (membership only — who's in the play)
 CREATE TABLE play_members (
   play_id UUID NOT NULL REFERENCES plays(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  character_id UUID REFERENCES characters(id) ON DELETE SET NULL,
   PRIMARY KEY (play_id, user_id)
+);
+
+-- Character Assignments (who plays which character — one user can play multiple)
+CREATE TABLE character_assignments (
+  character_id UUID NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (character_id)
 );
 
 -- Scenes

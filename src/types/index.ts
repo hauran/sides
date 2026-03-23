@@ -12,6 +12,8 @@ export interface Play {
   created_by: string; // FK -> User
   script_type: 'pdf' | 'photos';
   script_uri: string | null;
+  status: 'processing' | 'ready' | 'failed';
+  progress: string | null;
   created_at: string;
 }
 
@@ -31,7 +33,11 @@ export interface Character {
 export interface PlayMember {
   play_id: string;
   user_id: string;
-  character_id: string | null;
+}
+
+export interface CharacterAssignment {
+  character_id: string;
+  user_id: string;
 }
 
 export interface Scene {

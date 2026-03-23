@@ -1,20 +1,24 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Animated } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { createAudioPlayer, AudioPlayer } from 'expo-audio';
+import { ActivityIndicator } from 'react-native';
 import { useSceneStore } from '../../src/store/useSceneStore';
-import { createLineSpeaker, setTtsDevUserId } from '../../src/lib/tts';
+import { DEV_USER_ID, api, setDevUserId } from '../../src/lib/api';
+import { createLineSpeaker } from '../../src/lib/tts';
 import type { Line } from '../../src/types';
 
-const DEV_USER_ID = 'a9dfc43f-eb47-4822-8348-62b5e77af5a5';
-
-type RehearsalState = 'idle' | 'loading' | 'playing' | 'my_turn' | 'done';
+type RehearsalState = 'idle' | 'loading' | 'playing' | 'my_turn' | 'paused' | 'done';
 
 export default function RehearsalScreen() {
-  const { sceneId, characterId } = useLocalSearchParams<{
+  const { sceneId, characterIds: characterIdsParam } = useLocalSearchParams<{
     sceneId: string;
-    characterId: string;
+    characterIds: string;
   }>();
+  const myCharacterIds = useMemo(
+    () => new Set((characterIdsParam ?? '').split(',').filter(Boolean)),
+    [characterIdsParam]
+  );
   const router = useRouter();
   const scenes = useSceneStore((s) => s.scenes);
   const scene = sceneId ? scenes[sceneId] : undefined;
@@ -26,11 +30,20 @@ export default function RehearsalScreen() {
 
   const [state, setState] = useState<RehearsalState>('idle');
   const [currentLineIndex, setCurrentLineIndex] = useState(0);
+  const [linesLoaded, setLinesLoaded] = useState(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    setTtsDevUserId(DEV_USER_ID);
-    if (sceneId) fetchLines(sceneId);
+    setDevUserId(DEV_USER_ID);
+    if (sceneId) {
+      setLinesLoaded(false);
+      // Fetch scene metadata + lines
+      Promise.all([
+        api<{ id: string; name: string; play_id: string; sort: number }>(`/scenes/${sceneId}`)
+          .then((s) => useSceneStore.getState().setScene(s)),
+        fetchLines(sceneId),
+      ]).then(() => setLinesLoaded(true));
+    }
 
     return () => {
       currentPlayer.current?.remove();
@@ -66,9 +79,13 @@ export default function RehearsalScreen() {
     }
   }, [currentLineIndex, state]);
 
+  const playIdRef = useRef(0);
+
   function stopCurrentAudio() {
+    playIdRef.current++;
     if (currentPlayer.current) {
-      currentPlayer.current.remove();
+      try { currentPlayer.current.pause(); } catch (_) {}
+      try { currentPlayer.current.remove(); } catch (_) {}
       currentPlayer.current = null;
     }
   }
@@ -77,18 +94,24 @@ export default function RehearsalScreen() {
     const line = lines[index];
     if (!line) return;
 
+    stopCurrentAudio();
+    const thisPlayId = playIdRef.current;
+
     setState('loading');
     try {
       const player = createLineSpeaker(line.text, line.character_name ?? 'DEFAULT');
       currentPlayer.current = player;
 
       player.addListener('playbackStatusUpdate', (status) => {
+        // Ignore events from stale players
+        if (playIdRef.current !== thisPlayId) return;
+
         if (status.playing) {
           setState('playing');
         }
         if (status.didJustFinish) {
           player.remove();
-          currentPlayer.current = null;
+          if (currentPlayer.current === player) currentPlayer.current = null;
           advanceFrom(index);
         }
       });
@@ -96,18 +119,28 @@ export default function RehearsalScreen() {
       player.play();
     } catch (err) {
       console.error('TTS playback error:', err);
-      setTimeout(() => advanceFrom(index), 2000);
+      if (playIdRef.current === thisPlayId) {
+        setTimeout(() => advanceFrom(index), 2000);
+      }
+    }
+  }
+
+  function isMyLine(line: Line): boolean {
+    return line.character_id != null && myCharacterIds.has(line.character_id);
+  }
+
+  function activateLine(index: number) {
+    setCurrentLineIndex(index);
+    const line = lines[index];
+    if (line && isMyLine(line)) {
+      setState('my_turn');
+    } else {
+      playOtherLine(index);
     }
   }
 
   function startRehearsal() {
-    setCurrentLineIndex(0);
-    const firstLine = lines[0];
-    if (firstLine?.character_id === characterId) {
-      setState('my_turn');
-    } else {
-      playOtherLine(0);
-    }
+    activateLine(0);
   }
 
   function advanceFrom(index: number) {
@@ -116,13 +149,7 @@ export default function RehearsalScreen() {
       setState('done');
       return;
     }
-    setCurrentLineIndex(nextIndex);
-    const nextLine = lines[nextIndex];
-    if (nextLine.character_id === characterId) {
-      setState('my_turn');
-    } else {
-      playOtherLine(nextIndex);
-    }
+    activateLine(nextIndex);
   }
 
   function handleAdvance() {
@@ -131,40 +158,58 @@ export default function RehearsalScreen() {
   }
 
   function handleTapLine(index: number) {
-    if (state === 'idle' || state === 'done') return;
+    if (state === 'done') return;
     stopCurrentAudio();
-    setCurrentLineIndex(index);
-    const line = lines[index];
-    if (line.character_id === characterId) {
-      setState('my_turn');
-    } else {
-      playOtherLine(index);
-    }
+    activateLine(index);
+  }
+
+  function handlePause() {
+    stopCurrentAudio();
+    setState('paused');
+  }
+
+  function handleResume() {
+    const line = lines[currentLineIndex];
+    if (!line) return;
+    activateLine(currentLineIndex);
   }
 
   function getLineStyle(line: Line, index: number) {
-    const isMine = line.character_id === characterId;
-    const isCurrent = index === currentLineIndex && state !== 'idle';
-    const isPast = state !== 'idle' && index < currentLineIndex;
+    const isMine = isMyLine(line);
+    const active = state !== 'idle';
+    const isCurrent = index === currentLineIndex && active;
+    const isPast = active && index < currentLineIndex;
 
-    if (isCurrent && state === 'my_turn') return styles.lineRowMyTurn;
-    if (isCurrent && (state === 'playing' || state === 'loading')) return styles.lineRowPlaying;
-    if (isPast) return styles.lineRowDone;
-    if (isMine) return styles.lineRowMine;
-    return styles.lineRow;
+    if (isCurrent && state === 'my_turn') return [styles.lineRowBase, styles.lineRowMyTurn];
+    if (isCurrent && state === 'paused') return [styles.lineRowBase, styles.lineRowPaused];
+    if (isCurrent && (state === 'playing' || state === 'loading')) return [styles.lineRowBase, styles.lineRowPlaying];
+    if (isPast) return [styles.lineRowBase, styles.lineRowDone];
+    if (isMine) return [styles.lineRowBase, styles.lineRowMine];
+    return styles.lineRowBase;
+  }
+
+  if (!linesLoaded) {
+    return (
+      <View style={[styles.container, styles.centered]}>
+        <ActivityIndicator size="large" color="#534AB7" />
+        <Text style={styles.loadingText}>Loading script...</Text>
+      </View>
+    );
   }
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <View style={styles.headerTop}>
-          <View style={{ flex: 1 }}>
+          <View style={styles.flex}>
             <Text style={styles.title}>{scene?.name ?? 'Rehearsal'}</Text>
             <Text style={styles.lineCount}>
               {state === 'idle'
-                ? `${lines.length} lines`
+                ? `${lines.length} lines — tap a line to start`
                 : state === 'done'
                 ? 'Scene complete!'
+                : state === 'paused'
+                ? `Paused — line ${currentLineIndex + 1} of ${lines.length}`
                 : `Line ${currentLineIndex + 1} of ${lines.length}`}
             </Text>
           </View>
@@ -200,7 +245,7 @@ export default function RehearsalScreen() {
                   <Text
                     style={[
                       styles.characterName,
-                      line.character_id === characterId && styles.characterNameMine,
+                      isMyLine(line) && styles.characterNameMine,
                     ]}
                   >
                     {line.character_name ?? 'UNKNOWN'}
@@ -217,29 +262,49 @@ export default function RehearsalScreen() {
 
       <View style={styles.footer}>
         {state === 'idle' && (
-          <Pressable style={styles.playButton} onPress={startRehearsal}>
-            <Text style={styles.playButtonIcon}>▶</Text>
-            <Text style={styles.playButtonText}>Start Rehearsal</Text>
-          </Pressable>
+          <View style={styles.idleHint}>
+            <Text style={styles.idleHintText}>Tap any line to start rehearsing</Text>
+          </View>
         )}
         {state === 'my_turn' && (
-          <Pressable style={styles.advanceButton} onPress={handleAdvance}>
-            <Text style={styles.advanceButtonText}>Done — Next Line</Text>
-          </Pressable>
+          <View style={styles.footerRow}>
+            <Pressable style={styles.pauseButton} onPress={handlePause}>
+              <Text style={styles.pauseButtonText}>⏸</Text>
+            </Pressable>
+            <Pressable style={[styles.advanceButton, styles.flex]} onPress={handleAdvance}>
+              <Text style={styles.advanceButtonText}>Done — Next Line</Text>
+            </Pressable>
+          </View>
         )}
         {state === 'loading' && (
-          <View style={styles.listeningBar}>
-            <Text style={styles.listeningText}>
-              Loading {currentLine?.character_name ?? 'other'}'s line...
-            </Text>
+          <View style={styles.footerRow}>
+            <Pressable style={styles.pauseButton} onPress={handlePause}>
+              <Text style={styles.pauseButtonText}>⏸</Text>
+            </Pressable>
+            <View style={[styles.listeningBar, styles.flex]}>
+              <Text style={styles.listeningText}>
+                Loading {currentLine?.character_name ?? 'other'}'s line...
+              </Text>
+            </View>
           </View>
         )}
         {state === 'playing' && (
-          <View style={styles.listeningBar}>
-            <Text style={styles.listeningText}>
-              🔊 {currentLine?.character_name ?? 'Other'} is speaking...
-            </Text>
+          <View style={styles.footerRow}>
+            <Pressable style={styles.pauseButton} onPress={handlePause}>
+              <Text style={styles.pauseButtonText}>⏸</Text>
+            </Pressable>
+            <View style={[styles.listeningBar, styles.flex]}>
+              <Text style={styles.listeningText}>
+                🔊 {currentLine?.character_name ?? 'Other'} is speaking...
+              </Text>
+            </View>
           </View>
+        )}
+        {state === 'paused' && (
+          <Pressable style={styles.playButton} onPress={handleResume}>
+            <Text style={styles.playButtonIcon}>▶</Text>
+            <Text style={styles.playButtonText}>Resume</Text>
+          </Pressable>
         )}
         {state === 'done' && (
           <Pressable style={styles.playButton} onPress={() => { setState('idle'); setCurrentLineIndex(0); }}>
@@ -252,6 +317,18 @@ export default function RehearsalScreen() {
 }
 
 const styles = StyleSheet.create({
+  flex: {
+    flex: 1,
+  },
+  centered: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 16,
+    color: '#999999',
+    fontSize: 15,
+  },
   container: {
     flex: 1,
     backgroundColor: '#FFFFFF',
@@ -294,37 +371,30 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingBottom: 40,
   },
-  lineRow: {
+  lineRowBase: {
     padding: 12,
     borderRadius: 8,
     gap: 4,
   },
   lineRowMine: {
-    padding: 12,
-    borderRadius: 8,
-    gap: 4,
     backgroundColor: '#F8F7FF',
   },
   lineRowPlaying: {
-    padding: 12,
-    borderRadius: 8,
-    gap: 4,
     backgroundColor: '#EEEDFE',
     borderLeftWidth: 3,
     borderLeftColor: '#534AB7',
   },
   lineRowMyTurn: {
-    padding: 12,
-    borderRadius: 8,
-    gap: 4,
     backgroundColor: '#FFF8ED',
     borderLeftWidth: 3,
     borderLeftColor: '#EF9F27',
   },
+  lineRowPaused: {
+    backgroundColor: '#F5F5F5',
+    borderLeftWidth: 3,
+    borderLeftColor: '#999999',
+  },
   lineRowDone: {
-    padding: 12,
-    borderRadius: 8,
-    gap: 4,
     opacity: 0.4,
   },
   characterName: {
@@ -355,6 +425,30 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     borderTopWidth: 1,
     borderTopColor: '#EEEDFE',
+  },
+  footerRow: {
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'stretch',
+  },
+  idleHint: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+  },
+  idleHintText: {
+    fontSize: 15,
+    color: '#999999',
+  },
+  pauseButton: {
+    width: 52,
+    backgroundColor: '#E0E0E0',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pauseButtonText: {
+    fontSize: 20,
   },
   playButton: {
     flexDirection: 'row',

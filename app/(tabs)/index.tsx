@@ -1,11 +1,10 @@
-import { useEffect } from 'react';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useEffect, useRef, useCallback } from 'react';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, ScrollView } from 'react-native';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { usePlayStore } from '../../src/store/usePlayStore';
 import { useUserStore } from '../../src/store/useUserStore';
-import { setDevUserId } from '../../src/lib/api';
-
-const DEV_USER_ID = 'a9dfc43f-eb47-4822-8348-62b5e77af5a5';
+import { DEV_USER_ID, setDevUserId } from '../../src/lib/api';
+const POLL_INTERVAL = 5000;
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -13,19 +12,46 @@ export default function HomeScreen() {
   const loading = usePlayStore((s) => s.loading);
   const fetchPlays = usePlayStore((s) => s.fetchPlays);
   const fetchCurrentUser = useUserStore((s) => s.fetchCurrentUser);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     setDevUserId(DEV_USER_ID);
-    fetchCurrentUser().then(() => fetchPlays());
+    fetchCurrentUser();
   }, []);
 
+  // Re-fetch when tab is focused (e.g. after uploading)
+  useFocusEffect(
+    useCallback(() => {
+      fetchPlays();
+    }, [])
+  );
+
+  // Poll while any play is processing
   const playList = Object.values(plays);
+  const hasProcessing = playList.some((p) => p.status === 'processing');
+
+
+  useEffect(() => {
+    if (hasProcessing) {
+      pollRef.current = setInterval(() => {
+        fetchPlays();
+      }, POLL_INTERVAL);
+      return () => {
+        if (pollRef.current) clearInterval(pollRef.current);
+      };
+    } else {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    }
+  }, [hasProcessing]);
 
   return (
     <View style={styles.container}>
       <Text style={styles.heading}>Your Plays</Text>
 
-      {loading ? (
+      {loading && playList.length === 0 ? (
         <View style={styles.emptyState}>
           <ActivityIndicator size="large" color="#534AB7" />
         </View>
@@ -37,20 +63,49 @@ export default function HomeScreen() {
           </Text>
         </View>
       ) : (
-        <View style={styles.playList}>
-          {playList.map((play) => (
+        <ScrollView style={styles.scrollList} contentContainerStyle={styles.playList}>
+          {playList.map((play) => {
+            const status = play.status ?? 'ready';
+            return (
             <Pressable
               key={play.id}
-              style={styles.playCard}
-              onPress={() => router.push(`/play/${play.id}`)}
+              style={[
+                styles.playCard,
+                status === 'processing' && styles.playCardProcessing,
+                status === 'failed' && styles.playCardFailed,
+              ]}
+              onPress={() => {
+                if (status !== 'processing') {
+                  router.push(`/play/${play.id}`);
+                }
+              }}
+              disabled={status === 'processing'}
             >
-              <Text style={styles.playTitle}>{play.title}</Text>
-              <Text style={styles.playMeta}>
-                {play.script_type.toUpperCase()} script
-              </Text>
+              <View style={styles.playCardContent}>
+                <View style={styles.playCardText}>
+                  <Text style={styles.playTitle}>{play.title}</Text>
+                  {status === 'processing' ? (
+                    <Text style={styles.processingText}>
+                      {play.progress || 'Putting together your script...'}
+                    </Text>
+                  ) : status === 'failed' ? (
+                    <Text style={styles.failedText}>
+                      {play.progress || 'Something went wrong parsing this script.'}
+                    </Text>
+                  ) : (
+                    <Text style={styles.playMeta}>
+                      {play.script_type.toUpperCase()} script
+                    </Text>
+                  )}
+                </View>
+                {status === 'processing' && (
+                  <ActivityIndicator size="small" color="#534AB7" />
+                )}
+              </View>
             </Pressable>
-          ))}
-        </View>
+            );
+          })}
+        </ScrollView>
       )}
 
       <Pressable
@@ -93,8 +148,12 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     paddingHorizontal: 40,
   },
+  scrollList: {
+    flex: 1,
+  },
   playList: {
     gap: 12,
+    paddingBottom: 80,
   },
   playCard: {
     backgroundColor: '#EEEDFE',
@@ -102,6 +161,21 @@ const styles = StyleSheet.create({
     padding: 16,
     borderLeftWidth: 4,
     borderLeftColor: '#534AB7',
+  },
+  playCardProcessing: {
+    borderLeftColor: '#EF9F27',
+    backgroundColor: '#FFF8ED',
+  },
+  playCardFailed: {
+    borderLeftColor: '#EF4444',
+    backgroundColor: '#FFF5F5',
+  },
+  playCardContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  playCardText: {
+    flex: 1,
   },
   playTitle: {
     fontSize: 18,
@@ -112,6 +186,15 @@ const styles = StyleSheet.create({
   playMeta: {
     fontSize: 13,
     color: '#888888',
+  },
+  processingText: {
+    fontSize: 13,
+    color: '#EF9F27',
+    fontStyle: 'italic',
+  },
+  failedText: {
+    fontSize: 13,
+    color: '#EF4444',
   },
   fab: {
     position: 'absolute',
