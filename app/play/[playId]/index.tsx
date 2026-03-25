@@ -1,9 +1,22 @@
 import { useEffect, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, Pressable, ScrollView, Alert, ActionSheetIOS, Platform, ActivityIndicator } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Pressable,
+  ScrollView,
+  Alert,
+  ActionSheetIOS,
+  Platform,
+  ActivityIndicator,
+  FlatList,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { usePlayStore } from '../../../src/store/usePlayStore';
 import { useUserStore } from '../../../src/store/useUserStore';
 import { api } from '../../../src/lib/api';
+import { colors, spacing, radii, typography, shadows } from '../../../src/lib/theme';
 
 interface PlayDetail {
   id: string;
@@ -38,6 +51,7 @@ export default function PlayDetailScreen() {
   const router = useRouter();
   const play = usePlayStore((s) => (playId ? s.plays[playId] : undefined));
   const currentUser = useUserStore((s) => s.currentUser);
+  const removePlay = usePlayStore((s) => s.removePlay);
   const [detail, setDetail] = useState<PlayDetail | null>(null);
 
   const fetchDetail = useCallback(() => {
@@ -134,19 +148,43 @@ export default function PlayDetailScreen() {
     });
   }
 
+  function handleLeavePlay() {
+    Alert.alert(
+      'Leave this play?',
+      'You\'ll be removed from the cast. You can be re-invited later.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Leave',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api(`/plays/${playId}/leave`, { method: 'DELETE' });
+              removePlay(playId!);
+              router.back();
+            } catch (err) {
+              console.error('Leave play error:', err);
+              Alert.alert('Error', 'Failed to leave play.');
+            }
+          },
+        },
+      ]
+    );
+  }
+
   if (!play) {
     return (
-      <View style={styles.container}>
+      <SafeAreaView style={styles.container}>
         <Text style={styles.errorText}>Play not found.</Text>
-      </View>
+      </SafeAreaView>
     );
   }
 
   if (!detail) {
     return (
-      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color="#534AB7" />
-      </View>
+      <SafeAreaView style={[styles.container, styles.centered]}>
+        <ActivityIndicator size="large" color={colors.rose} />
+      </SafeAreaView>
     );
   }
 
@@ -162,222 +200,289 @@ export default function PlayDetailScreen() {
   const myCharacterIds = assignments
     .filter((a) => a.user_id === currentUser?.id)
     .map((a) => a.character_id);
-  const myFirstCharacterId = myCharacterIds[0] ?? '';
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>{play.title}</Text>
-      <Text style={styles.meta}>{play.script_type.toUpperCase()} script</Text>
+    <SafeAreaView style={styles.container}>
+      {/* Custom top bar */}
+      <View style={styles.topBar}>
+        <Pressable
+          style={styles.backButton}
+          onPress={() => router.back()}
+          hitSlop={12}
+        >
+          <Text style={styles.backArrow}>{'\u2190'}</Text>
+        </Pressable>
+        <Text style={styles.topBarTitle} numberOfLines={1}>
+          {play.title}
+        </Text>
+        <View style={styles.backButton} />
+      </View>
 
-      <Text style={styles.sectionTitle}>Characters</Text>
-      {characters.length === 0 ? (
-        <Text style={styles.emptyText}>No characters parsed yet.</Text>
-      ) : (
-        <View style={styles.list}>
-          {characters.map((c) => {
-            const assignment = assignmentByCharacter.get(c.id);
-            const isMe = assignment?.user_id === currentUser?.id;
-            return (
-              <View key={c.id} style={[styles.characterRow, isMe && styles.characterRowMine]}>
-                <View style={styles.characterInfo}>
-                  <Text style={styles.characterName}>{c.name}</Text>
-                  {isMe ? (
-                    <Text style={styles.assignedMe}>You</Text>
-                  ) : assignment ? (
-                    <Text style={styles.assignedName}>{assignment.user_name}</Text>
-                  ) : (
-                    <Text style={styles.unassigned}>Not yet assigned</Text>
-                  )}
-                </View>
-                <View style={styles.characterRight}>
-                  {assignment && (
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Cast section */}
+        <Text style={styles.sectionLabel}>CAST</Text>
+        {characters.length === 0 ? (
+          <Text style={styles.emptyText}>No characters found</Text>
+        ) : (
+          <FlatList
+            data={characters}
+            keyExtractor={(c) => c.id}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.castRow}
+            renderItem={({ item: c }) => {
+              const assignment = assignmentByCharacter.get(c.id);
+              const isMe = assignment?.user_id === currentUser?.id;
+              const isAssigned = !!assignment;
+
+              return (
+                <Pressable
+                  style={[
+                    styles.characterCard,
+                    isMe && styles.characterCardMine,
+                  ]}
+                  onPress={() => showCharacterMenu(c.id, c.name, isMe)}
+                                 >
+                  {/* Avatar */}
+                  {isAssigned ? (
                     <View style={[styles.avatar, isMe && styles.avatarMine]}>
                       <Text style={styles.avatarText}>
                         {getInitials(isMe ? (currentUser?.name ?? 'ME') : assignment.user_name)}
                       </Text>
                     </View>
+                  ) : (
+                    <View style={styles.avatarUnassigned}>
+                      <Text style={styles.avatarUnassignedText}>?</Text>
+                    </View>
                   )}
-                  <Pressable
-                    style={styles.kebab}
-                    onPress={() => showCharacterMenu(c.id, c.name, isMe)}
-                    hitSlop={12}
-                  >
-                    <Text style={styles.kebabText}>···</Text>
-                  </Pressable>
-                </View>
-              </View>
-            );
-          })}
-        </View>
-      )}
 
-      <Text style={styles.sectionTitle}>Scenes</Text>
-      {scenes.length === 0 ? (
-        <Text style={styles.emptyText}>No scenes parsed yet.</Text>
-      ) : (
-        <View style={styles.list}>
-          {scenes.map((scene) => (
-            <Pressable
-              key={scene.id}
-              style={styles.sceneCard}
-              onPress={() => router.push(`/rehearse/${scene.id}?characterIds=${myCharacterIds.join(',')}`)}
-            >
-              <Text style={styles.sceneName}>{scene.name}</Text>
-              <Text style={styles.sceneArrow}>{'\u203A'}</Text>
-            </Pressable>
-          ))}
-        </View>
-      )}
-    </ScrollView>
+                  {/* Name */}
+                  <Text style={styles.characterName} numberOfLines={2}>
+                    {c.name}
+                  </Text>
+
+                  {/* Status */}
+                  {isMe ? (
+                    <Text style={styles.statusMe}>You</Text>
+                  ) : isAssigned ? (
+                    <Text style={styles.statusAssigned} numberOfLines={1}>
+                      {assignment.user_name}
+                    </Text>
+                  ) : (
+                    <Text style={styles.statusOpen}>Open</Text>
+                  )}
+                </Pressable>
+              );
+            }}
+          />
+        )}
+
+        {/* Scenes section */}
+        <Text style={[styles.sectionLabel, styles.scenesLabel]}>SCENES</Text>
+        {scenes.length === 0 ? (
+          <Text style={styles.emptyText}>No scenes parsed yet</Text>
+        ) : (
+          <View style={styles.scenesList}>
+            {scenes.map((scene) => (
+              <Pressable
+                key={scene.id}
+                style={({ pressed }) => [
+                  styles.sceneCard,
+                  pressed && styles.sceneCardPressed,
+                ]}
+                onPress={() => router.push(`/rehearse/${scene.id}?characterIds=${myCharacterIds.join(',')}`)}
+                             >
+                <Text style={styles.sceneName}>{scene.name}</Text>
+                <Text style={styles.sceneChevron}>{'\u203A'}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+
+        {/* Leave play */}
+        <Pressable style={styles.leaveButton} onPress={handleLeavePlay}>
+          <Text style={styles.leaveButtonText}>Leave Play</Text>
+        </Pressable>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
+
+const CARD_WIDTH = 100;
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.bg,
+  },
+  centered: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.md,
+  },
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: radii.full,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  backArrow: {
+    fontSize: 24,
+    color: colors.text,
+    fontWeight: '600',
+  },
+  topBarTitle: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 24,
+    fontWeight: '800',
+    color: colors.text,
+  },
+  scrollView: {
+    flex: 1,
   },
   content: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 40,
+    paddingHorizontal: spacing.xl,
+    paddingBottom: spacing.xxxxl,
   },
-  title: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#1A1A2E',
-    marginBottom: 4,
+  sectionLabel: {
+    ...typography.label,
+    color: colors.rose,
+    marginBottom: spacing.md,
   },
-  meta: {
-    fontSize: 14,
-    color: '#888888',
-    marginBottom: 24,
+  scenesLabel: {
+    marginTop: spacing.xxl,
   },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#534AB7',
-    marginBottom: 12,
-    marginTop: 8,
+  castRow: {
+    paddingBottom: spacing.sm,
+    gap: spacing.md,
   },
-  list: {
-    gap: 8,
-    marginBottom: 20,
-  },
-  characterRow: {
-    backgroundColor: '#EEEDFE',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  characterCard: {
+    width: CARD_WIDTH,
+    backgroundColor: colors.surface,
+    borderRadius: radii.lg,
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.sm,
     alignItems: 'center',
+    ...shadows.sm,
   },
-  characterRowMine: {
-    backgroundColor: '#F0EDFF',
+  characterCardMine: {
     borderWidth: 2,
-    borderColor: '#534AB7',
-  },
-  characterInfo: {
-    flex: 1,
-    gap: 2,
-  },
-  characterName: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#1A1A2E',
-  },
-  assignedMe: {
-    fontSize: 13,
-    color: '#534AB7',
-    fontWeight: '600',
-  },
-  assignedName: {
-    fontSize: 13,
-    color: '#534AB7',
-  },
-  unassigned: {
-    fontSize: 13,
-    color: '#BBBBBB',
-    fontStyle: 'italic',
+    borderColor: colors.rose,
   },
   avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#534AB7',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: colors.sage,
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: 12,
-  },
-  avatarText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    marginBottom: spacing.sm,
   },
   avatarMine: {
-    backgroundColor: '#EF9F27',
+    backgroundColor: colors.rose,
   },
-  characterRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  avatarText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.textInverse,
   },
-  kebab: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+  avatarUnassigned: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 2,
+    borderStyle: 'dashed',
+    borderColor: colors.border,
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: 4,
+    marginBottom: spacing.sm,
   },
-  kebabText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#534AB7',
-    letterSpacing: 1,
-  },
-  avatarInvite: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 2,
-    borderColor: '#534AB7',
-    borderStyle: 'dashed',
-  },
-  avatarInviteText: {
+  avatarUnassignedText: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#534AB7',
+    color: colors.textSecondary,
+  },
+  characterName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.text,
+    textAlign: 'center',
+    marginBottom: spacing.xs,
+  },
+  statusMe: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.rose,
+  },
+  statusAssigned: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    textAlign: 'center',
+  },
+  statusOpen: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    fontStyle: 'italic',
+  },
+  scenesList: {
+    gap: spacing.md,
   },
   sceneCard: {
-    backgroundColor: '#EEEDFE',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    backgroundColor: colors.surface,
+    borderRadius: radii.lg,
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.xl,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    ...shadows.sm,
+  },
+  sceneCardPressed: {
+    opacity: 0.7,
   },
   sceneName: {
-    fontSize: 15,
-    fontWeight: '500',
-    color: '#1A1A2E',
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
     flex: 1,
   },
-  sceneArrow: {
-    fontSize: 22,
-    color: '#534AB7',
+  sceneChevron: {
+    fontSize: 28,
+    color: colors.rose,
     fontWeight: '700',
+    marginLeft: spacing.md,
   },
   emptyText: {
     fontSize: 14,
-    color: '#999999',
+    color: colors.textSecondary,
     fontStyle: 'italic',
-    marginBottom: 16,
+    marginBottom: spacing.lg,
   },
   errorText: {
     fontSize: 17,
-    color: '#EF4444',
+    color: colors.coral,
     textAlign: 'center',
-    marginTop: 40,
+    marginTop: spacing.xxxxl,
+  },
+  leaveButton: {
+    marginTop: spacing.xxxxl,
+    paddingVertical: spacing.lg,
+    alignItems: 'center',
+  },
+  leaveButtonText: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: colors.coral,
   },
 });

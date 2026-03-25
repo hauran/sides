@@ -1,37 +1,18 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { colors } from '../src/lib/theme';
 
 export default function RootLayout() {
   return (
     <>
       <StatusBar style="dark" />
-      <Stack
-        screenOptions={{
-          headerStyle: {
-            backgroundColor: '#EEEDFE',
-          },
-          headerTintColor: '#534AB7',
-          headerTitleStyle: {
-            fontWeight: '700',
-          },
-          contentStyle: {
-            backgroundColor: '#FFFFFF',
-          },
-        }}
-      >
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen
-          name="play/new"
-          options={{ title: 'New Play', presentation: 'modal' }}
-        />
-        <Stack.Screen
-          name="play/[playId]/index"
-          options={{ title: 'Play Details' }}
-        />
-        <Stack.Screen
-          name="rehearse/[sceneId]"
-          options={{ title: 'Rehearse', presentation: 'fullScreenModal' }}
-        />
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg }, animation: 'slide_from_right' }}>
+        <Stack.Screen name="index" />
+        <Stack.Screen name="settings" />
+        <Stack.Screen name="play/new" />
+        <Stack.Screen name="play/[playId]/index" />
+        <Stack.Screen name="play/[playId]/edit" />
+        <Stack.Screen name="rehearse/[sceneId]" />
       </Stack>
     </>
   );

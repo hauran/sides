@@ -3,6 +3,8 @@ import { View, Text, StyleSheet, ScrollView, Pressable, Animated } from 'react-n
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { createAudioPlayer, AudioPlayer, setAudioModeAsync } from 'expo-audio';
 import { ActivityIndicator } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { colors, radii, shadows } from '../../src/lib/theme';
 import { useSceneStore } from '../../src/store/useSceneStore';
 import { DEV_USER_ID, api, setDevUserId, uploadRecording } from '../../src/lib/api';
 import { createLineSpeaker } from '../../src/lib/tts';
@@ -441,69 +443,91 @@ export default function RehearsalScreen() {
   }
 
   function getLineStyle(line: Line, index: number) {
-    const isMine = isMyLine(line);
     const active = state !== 'idle';
     const isCurrent = index === currentLineIndex && active;
     const isPast = active && index < currentLineIndex;
 
-    if (isCurrent && state === 'my_turn' && mode === 'recording') return [styles.lineRowBase, styles.lineRowRecording];
-    if (isCurrent && state === 'my_turn') return [styles.lineRowBase, styles.lineRowMyTurn];
-    if (isCurrent && state === 'paused') return [styles.lineRowBase, styles.lineRowPaused];
-    if (isCurrent && (state === 'playing' || state === 'loading')) return [styles.lineRowBase, styles.lineRowPlaying];
+    // Past lines fade out, current line gets breathing room via marginVertical
     if (isPast) return [styles.lineRowBase, styles.lineRowDone];
-    if (isMine) return [styles.lineRowBase, styles.lineRowMine];
+    if (isCurrent) return [styles.lineRowBase, styles.lineRowCurrent];
     return styles.lineRowBase;
   }
 
   if (!linesLoaded) {
     return (
-      <View style={[styles.container, styles.centered]}>
-        <ActivityIndicator size="large" color="#534AB7" />
+      <SafeAreaView style={[styles.container, styles.centered]}>
+        <ActivityIndicator size="large" color={colors.rose} />
         <Text style={styles.loadingText}>Loading script...</Text>
-      </View>
+      </SafeAreaView>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <View style={styles.headerTop}>
-          <View style={styles.flex}>
-            <Text style={styles.title}>{scene?.name ?? 'Rehearsal'}</Text>
-            <Text style={styles.lineCount}>
-              {state === 'idle'
-                ? `${lines.length} lines — tap a line to start`
-                : state === 'done'
-                ? 'Scene complete!'
-                : state === 'paused'
-                ? `Paused — line ${currentLineIndex + 1} of ${lines.length}`
-                : `Line ${currentLineIndex + 1} of ${lines.length}`}
-            </Text>
-          </View>
-          <Pressable onPress={() => { stopCurrentAudio(); stopListening(); router.back(); }} style={styles.closeX}>
-            <Text style={styles.closeXText}>✕</Text>
-          </Pressable>
-        </View>
-        <View style={styles.modeSwitcher}>
-          <Pressable
-            style={[styles.modeButton, mode === 'learning' && styles.modeButtonActive]}
-            onPress={() => setMode('learning')}
+    <SafeAreaView style={styles.container}>
+      {/* Floating top bar — transparent, no solid band */}
+      <View style={styles.topBar}>
+        <Pressable
+          style={styles.backButton}
+          onPress={() => { stopCurrentAudio(); stopListening(); router.back(); }}
+        >
+          <Text style={styles.backButtonText}>{'\u2190'}</Text>
+        </Pressable>
+        <Text style={styles.sceneName} numberOfLines={1}>
+          {scene?.name ?? 'Rehearsal'}
+        </Text>
+        <View style={{ width: 40 }} />
+      </View>
+
+      {/* Mode switcher — small floating pills */}
+      <View style={styles.modeSwitcherRow}>
+        <Pressable
+          style={[
+            styles.modePill,
+            mode === 'learning' && styles.modePillActiveLearning,
+          ]}
+          onPress={() => setMode('learning')}
+        >
+          <Text
+            style={[
+              styles.modePillText,
+              mode === 'learning' && styles.modePillTextActiveLearning,
+            ]}
           >
-            <Text style={[styles.modeButtonText, mode === 'learning' && styles.modeButtonTextActive]}>Learning</Text>
-          </Pressable>
-          <Pressable
-            style={[styles.modeButton, mode === 'practice' && styles.modeButtonActive]}
-            onPress={() => setMode('practice')}
+            Learning
+          </Text>
+        </Pressable>
+        <Pressable
+          style={[
+            styles.modePill,
+            mode === 'practice' && styles.modePillActivePractice,
+          ]}
+          onPress={() => setMode('practice')}
+        >
+          <Text
+            style={[
+              styles.modePillText,
+              mode === 'practice' && styles.modePillTextActivePractice,
+            ]}
           >
-            <Text style={[styles.modeButtonText, mode === 'practice' && styles.modeButtonTextActive]}>Practice</Text>
-          </Pressable>
-          <Pressable
-            style={[styles.modeButton, mode === 'recording' && styles.modeButtonActiveRecording]}
-            onPress={() => setMode('recording')}
+            Practice
+          </Text>
+        </Pressable>
+        <Pressable
+          style={[
+            styles.modePill,
+            mode === 'recording' && styles.modePillActiveRecording,
+          ]}
+          onPress={() => setMode('recording')}
+        >
+          <Text
+            style={[
+              styles.modePillText,
+              mode === 'recording' && styles.modePillTextActiveRecording,
+            ]}
           >
-            <Text style={[styles.modeButtonText, mode === 'recording' && styles.modeButtonTextActiveRecording]}>Recording</Text>
-          </Pressable>
-        </View>
+            Recording
+          </Text>
+        </Pressable>
       </View>
 
       {/* Countdown overlay */}
@@ -513,6 +537,7 @@ export default function RehearsalScreen() {
         </View>
       )}
 
+      {/* Script — the hero area */}
       <ScrollView
         ref={scrollRef}
         style={styles.scriptScroll}
@@ -528,12 +553,7 @@ export default function RehearsalScreen() {
             }}
           >
             <Animated.View
-              style={[
-                getLineStyle(line, index),
-                index === currentLineIndex && state === 'my_turn' && mode !== 'recording'
-                  ? { opacity: pulseAnim }
-                  : null,
-              ]}
+              style={getLineStyle(line, index)}
             >
               {line.character_id ? (
                 <>
@@ -558,101 +578,112 @@ export default function RehearsalScreen() {
                   }
                 </>
               ) : (
-                <Text style={styles.stageDirection}>[{line.text}]</Text>
+                <Text style={styles.stageDirection}>{line.text}</Text>
               )}
             </Animated.View>
           </Pressable>
         ))}
       </ScrollView>
 
-      <View style={styles.footer}>
-        {state === 'idle' && (
-          <View style={styles.idleHint}>
-            <Text style={styles.idleHintText}>Tap any line to start rehearsing</Text>
-          </View>
-        )}
-        {state === 'my_turn' && (
-          <View style={styles.myTurnFooter}>
-            {/* Recording indicator */}
-            {mode === 'recording' && isRecording && (
-              <View style={styles.micRow}>
-                <Animated.View style={[styles.recDot, { opacity: recPulseAnim }]} />
-                <Text style={styles.recLabel}>
-                  Recording... {formatElapsed(durationMillis)}
-                </Text>
-              </View>
-            )}
-            {mode === 'recording' && isUploading && (
-              <View style={styles.micRow}>
-                <ActivityIndicator size="small" color="#E53935" />
-                <Text style={styles.recLabel}>Uploading...</Text>
-              </View>
-            )}
-            {isListening && (
-              <View style={styles.micRow}>
-                <Animated.View style={[styles.micDot, { opacity: micPulseAnim }]} />
-                <Text style={styles.micLabel} numberOfLines={1}>
-                  {transcript
-                    ? `"${transcript.length > 50 ? '...' + transcript.slice(-50) : transcript}"`
-                    : 'Listening...'}
-                </Text>
-              </View>
-            )}
-            {!isListening && isSpeechAvailable && speechError && (
-              <View style={styles.micRow}>
-                <Text style={styles.micErrorText}>{TRANSCRIPTION_ERROR_MESSAGES[speechError]}</Text>
-              </View>
-            )}
-            <View style={styles.footerRow}>
-              <Pressable style={styles.pauseButton} onPress={handlePause}>
-                <Text style={styles.pauseButtonText}>⏸</Text>
-              </Pressable>
-              {mode === 'practice' && (
-                <Pressable style={styles.hintButton} onPress={handleHint}>
-                  <Text style={styles.hintButtonText}>Hint</Text>
-                </Pressable>
+      {/* Floating footer pill */}
+      <View style={styles.footerWrapper}>
+        <View style={styles.footerPill}>
+          {state === 'idle' && (
+            <Pressable style={styles.startButton} onPress={startRehearsal}>
+              <Text style={styles.startButtonText}>Start Rehearsing</Text>
+            </Pressable>
+          )}
+
+          {state === 'my_turn' && (
+            <View style={styles.myTurnFooter}>
+              {/* Mic/recording status integrated into pill */}
+              {mode === 'recording' && isRecording && (
+                <View style={styles.statusRow}>
+                  <Animated.View style={[styles.recDot, { opacity: recPulseAnim }]} />
+                  <Text style={styles.recLabel} numberOfLines={1}>
+                    Recording {formatElapsed(durationMillis)}
+                  </Text>
+                </View>
               )}
-              <Pressable style={[styles.advanceButton, styles.flex]} onPress={handleAdvance}>
-                <Text style={styles.advanceButtonText}>Done — Next Line</Text>
+              {mode === 'recording' && isUploading && (
+                <View style={styles.statusRow}>
+                  <ActivityIndicator size="small" color={colors.coral} />
+                  <Text style={styles.recLabel}>Uploading...</Text>
+                </View>
+              )}
+              {isListening && !(mode === 'recording' && isRecording) && (
+                <View style={styles.statusRow}>
+                  <Animated.View style={[styles.micDot, { opacity: micPulseAnim }]} />
+                  <Text style={styles.micLabel} numberOfLines={1}>
+                    {transcript
+                      ? `"${transcript.length > 40 ? '...' + transcript.slice(-40) : transcript}"`
+                      : 'Listening...'}
+                  </Text>
+                </View>
+              )}
+              {!isListening && isSpeechAvailable && speechError && (
+                <View style={styles.statusRow}>
+                  <Text style={styles.micErrorText}>{TRANSCRIPTION_ERROR_MESSAGES[speechError]}</Text>
+                </View>
+              )}
+              <View style={styles.controlRow}>
+                <Pressable style={styles.pauseButton} onPress={handlePause}>
+                  <Text style={styles.pauseButtonText}>| |</Text>
+                </Pressable>
+                {mode === 'practice' && (
+                  <Pressable onPress={handleHint}>
+                    <Text style={styles.hintButtonText}>Hint</Text>
+                  </Pressable>
+                )}
+                <View style={styles.controlSpacer} />
+                <Pressable style={styles.doneButton} onPress={handleAdvance}>
+                  <Text style={styles.doneButtonText}>Done</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
+
+          {state === 'loading' && (
+            <View style={styles.controlRow}>
+              <Pressable style={styles.pauseButton} onPress={handlePause}>
+                <Text style={styles.pauseButtonText}>| |</Text>
               </Pressable>
-            </View>
-          </View>
-        )}
-        {state === 'loading' && (
-          <View style={styles.footerRow}>
-            <Pressable style={styles.pauseButton} onPress={handlePause}>
-              <Text style={styles.pauseButtonText}>⏸</Text>
-            </Pressable>
-            <View style={[styles.listeningBar, styles.flex]}>
-              <Text style={styles.listeningText}>
-                Loading {currentLine?.character_name ?? 'other'}'s line...
-              </Text>
-            </View>
-          </View>
-        )}
-        {state === 'playing' && (
-          <View style={styles.footerRow}>
-            <Pressable style={styles.pauseButton} onPress={handlePause}>
-              <Text style={styles.pauseButtonText}>⏸</Text>
-            </Pressable>
-            <View style={[styles.listeningBar, styles.flex]}>
-              <Text style={styles.listeningText}>
+              <View style={styles.controlSpacer} />
+              <Text style={styles.speakingText}>
                 {currentLine?.character_name ?? 'Other'} is speaking...
               </Text>
+              <View style={styles.controlSpacer} />
             </View>
-          </View>
-        )}
-        {state === 'paused' && (
-          <Pressable style={styles.playButton} onPress={handleResume}>
-            <Text style={styles.playButtonIcon}>▶</Text>
-            <Text style={styles.playButtonText}>Resume</Text>
-          </Pressable>
-        )}
-        {state === 'done' && (
-          <Pressable style={styles.playButton} onPress={() => { setState('idle'); setCurrentLineIndex(0); }}>
-            <Text style={styles.playButtonText}>Rehearse Again</Text>
-          </Pressable>
-        )}
+          )}
+
+          {state === 'playing' && (
+            <View style={styles.controlRow}>
+              <Pressable style={styles.pauseButton} onPress={handlePause}>
+                <Text style={styles.pauseButtonText}>| |</Text>
+              </Pressable>
+              <View style={styles.controlSpacer} />
+              <Text style={styles.speakingText}>
+                {currentLine?.character_name ?? 'Other'} is speaking...
+              </Text>
+              <View style={styles.controlSpacer} />
+            </View>
+          )}
+
+          {state === 'paused' && (
+            <Pressable style={styles.resumeButton} onPress={handleResume}>
+              <Text style={styles.resumeButtonText}>Resume</Text>
+            </Pressable>
+          )}
+
+          {state === 'done' && (
+            <Pressable
+              style={styles.againButton}
+              onPress={() => { setState('idle'); setCurrentLineIndex(0); }}
+            >
+              <Text style={styles.againButtonText}>Again!</Text>
+            </Pressable>
+          )}
+        </View>
       </View>
 
       {editingLine && (
@@ -663,13 +694,15 @@ export default function RehearsalScreen() {
           onSave={handleSaveLineEdit}
         />
       )}
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  flex: {
+  // Layout
+  container: {
     flex: 1,
+    backgroundColor: colors.bg,
   },
   centered: {
     justifyContent: 'center',
@@ -677,285 +710,312 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     marginTop: 16,
-    color: '#999999',
+    color: colors.textSecondary,
     fontSize: 15,
   },
-  container: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-  },
-  header: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#EEEDFE',
-  },
-  headerTop: {
+
+  // Top bar — transparent floating
+  topBar: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 4,
   },
-  title: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#1A1A2E',
-    marginBottom: 2,
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: radii.full,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  lineCount: {
-    fontSize: 13,
-    color: '#999999',
-  },
-  closeX: {
-    padding: 4,
-    marginLeft: 12,
-  },
-  closeXText: {
-    fontSize: 18,
-    color: '#999999',
+  backButtonText: {
+    fontSize: 24,
+    color: colors.text,
     fontWeight: '600',
   },
+  sceneName: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 13,
+    color: colors.textSecondary,
+  },
+  lineCountPill: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radii.full,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    minWidth: 36,
+    alignItems: 'center',
+  },
+  lineCountPillText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+
+  // Mode switcher — small floating pills
+  modeSwitcherRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 24,
+  },
+  modePill: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: radii.full,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  modePillText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  modePillActiveLearning: {
+    backgroundColor: colors.rose,
+    borderColor: colors.rose,
+  },
+  modePillTextActiveLearning: {
+    color: colors.textInverse,
+  },
+  modePillActivePractice: {
+    backgroundColor: colors.rose,
+    borderColor: colors.rose,
+  },
+  modePillTextActivePractice: {
+    color: colors.textInverse,
+  },
+  modePillActiveRecording: {
+    backgroundColor: colors.coral,
+    borderColor: colors.coral,
+  },
+  modePillTextActiveRecording: {
+    color: colors.textInverse,
+  },
+
+  // Script area
   scriptScroll: {
     flex: 1,
   },
   scriptContent: {
-    padding: 20,
-    gap: 12,
-    paddingBottom: 40,
+    paddingHorizontal: 24,
+    paddingTop: 8,
+    paddingBottom: 120,
+    gap: 16,
   },
+
+  // Line styles — pure editorial, no cards
   lineRowBase: {
-    padding: 12,
-    borderRadius: 8,
-    gap: 4,
+    paddingVertical: 8,
+    paddingHorizontal: 0,
+    gap: 3,
   },
-  lineRowMine: {
-    backgroundColor: '#F8F7FF',
-  },
-  lineRowPlaying: {
-    backgroundColor: '#EEEDFE',
-    borderLeftWidth: 3,
-    borderLeftColor: '#534AB7',
-  },
-  lineRowMyTurn: {
-    backgroundColor: '#FFF8ED',
-    borderLeftWidth: 3,
-    borderLeftColor: '#EF9F27',
-  },
-  lineRowRecording: {
-    backgroundColor: '#FFF0F0',
-    borderLeftWidth: 3,
-    borderLeftColor: '#E53935',
-  },
-  lineRowPaused: {
-    backgroundColor: '#F5F5F5',
-    borderLeftWidth: 3,
-    borderLeftColor: '#999999',
+  lineRowCurrent: {
+    marginVertical: 8,
   },
   lineRowDone: {
-    opacity: 0.4,
+    opacity: 0.3,
   },
+
+  // Character names — these carry the visual hierarchy now
   characterRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    marginBottom: 4,
   },
   characterName: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#534AB7',
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.sage,
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 1.2,
   },
   characterNameMine: {
-    color: '#EF9F27',
+    color: colors.rose,
+    fontSize: 14,
+  },
+  characterNameCurrentMine: {
+    fontSize: 15,
+    letterSpacing: 1.5,
   },
   editedIndicator: {
     fontSize: 10,
-    color: '#999999',
+    color: colors.textSecondary,
     fontStyle: 'italic',
   },
+
+  // Line text
   lineText: {
-    fontSize: 16,
-    color: '#1A1A2E',
-    lineHeight: 24,
+    fontSize: 17,
+    color: colors.text,
+    lineHeight: 28,
     fontFamily: 'Georgia',
   },
+  hiddenLineText: {
+    fontSize: 16,
+    color: colors.textSecondary,
+    lineHeight: 26,
+    fontFamily: 'Georgia',
+    fontStyle: 'italic',
+  },
   stageDirection: {
-    fontSize: 14,
-    color: '#999999',
+    fontSize: 13,
+    color: colors.textSecondary,
     fontStyle: 'italic',
     lineHeight: 20,
+    textAlign: 'center',
+    opacity: 0.6,
+    paddingVertical: 4,
   },
-  footer: {
-    paddingHorizontal: 20,
-    paddingBottom: 36,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#EEEDFE',
-  },
-  footerRow: {
-    flexDirection: 'row',
-    gap: 10,
-    alignItems: 'stretch',
-  },
-  idleHint: {
+
+  // Floating footer
+  footerWrapper: {
+    position: 'absolute',
+    bottom: 32,
+    left: 0,
+    right: 0,
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 16,
+    paddingHorizontal: 20,
   },
-  idleHintText: {
-    fontSize: 15,
-    color: '#999999',
+  footerPill: {
+    width: '100%',
+    backgroundColor: colors.surface,
+    borderRadius: radii.xl,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    ...shadows.lg,
+  },
+
+  // Idle state — big CTA
+  startButton: {
+    backgroundColor: colors.rose,
+    borderRadius: radii.lg,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  startButtonText: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: colors.textInverse,
+  },
+
+  // My turn controls
+  myTurnFooter: {
+    gap: 8,
+  },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 2,
+  },
+  controlRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  controlSpacer: {
+    flex: 1,
   },
   pauseButton: {
-    width: 52,
-    backgroundColor: '#E0E0E0',
-    borderRadius: 12,
+    width: 40,
+    height: 40,
+    borderRadius: radii.full,
+    backgroundColor: colors.surfaceAlt,
     alignItems: 'center',
     justifyContent: 'center',
   },
   pauseButtonText: {
-    fontSize: 20,
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    letterSpacing: 1,
   },
-  playButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#534AB7',
-    borderRadius: 12,
-    paddingVertical: 16,
-    gap: 10,
+  doneButton: {
+    backgroundColor: colors.rose,
+    borderRadius: radii.full,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
   },
-  playButtonIcon: {
-    fontSize: 16,
-    color: '#FFFFFF',
-  },
-  playButtonText: {
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  advanceButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#EF9F27',
-    borderRadius: 12,
-    paddingVertical: 16,
-  },
-  advanceButtonText: {
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  listeningBar: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#EEEDFE',
-    borderRadius: 12,
-    paddingVertical: 16,
-  },
-  listeningText: {
+  doneButtonText: {
     fontSize: 15,
-    color: '#534AB7',
-    fontWeight: '500',
-  },
-  myTurnFooter: {
-    gap: 8,
-  },
-  micRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 4,
-  },
-  micDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#E53935',
-  },
-  micLabel: {
-    flex: 1,
-    fontSize: 13,
-    color: '#999999',
-    fontStyle: 'italic',
-  },
-  micErrorText: {
-    fontSize: 12,
-    color: '#E53935',
-  },
-  recDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#E53935',
-  },
-  recLabel: {
-    flex: 1,
-    fontSize: 13,
     fontWeight: '600',
-    color: '#E53935',
-  },
-  modeSwitcher: {
-    flexDirection: 'row',
-    marginTop: 8,
-    backgroundColor: '#F5F4FE',
-    borderRadius: 8,
-    padding: 2,
-  },
-  modeButton: {
-    flex: 1,
-    paddingVertical: 6,
-    alignItems: 'center',
-    borderRadius: 6,
-  },
-  modeButtonActive: {
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 1 },
-    elevation: 2,
-  },
-  modeButtonActiveRecording: {
-    backgroundColor: '#FFF0F0',
-    shadowColor: '#E53935',
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 1 },
-    elevation: 2,
-  },
-  modeButtonText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#999999',
-  },
-  modeButtonTextActive: {
-    color: '#534AB7',
-  },
-  modeButtonTextActiveRecording: {
-    color: '#E53935',
-  },
-  hiddenLineText: {
-    fontSize: 16,
-    color: '#CCCCCC',
-    lineHeight: 24,
-    fontFamily: 'Georgia',
-    fontStyle: 'italic',
-  },
-  hintButton: {
-    width: 60,
-    backgroundColor: '#F5F4FE',
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#EEEDFE',
+    color: colors.textInverse,
   },
   hintButtonText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#534AB7',
+    color: colors.rose,
   },
+
+  // Mic indicators
+  micDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.coral,
+  },
+  micLabel: {
+    flex: 1,
+    fontSize: 12,
+    color: colors.textSecondary,
+    fontStyle: 'italic',
+  },
+  micErrorText: {
+    fontSize: 12,
+    color: colors.coral,
+  },
+  recDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: colors.coral,
+  },
+  recLabel: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.coral,
+  },
+
+  // Speaking/loading state
+  speakingText: {
+    fontSize: 14,
+    color: colors.sage,
+    fontWeight: '500',
+  },
+
+  // Paused state
+  resumeButton: {
+    backgroundColor: colors.sage,
+    borderRadius: radii.lg,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  resumeButtonText: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: colors.textInverse,
+  },
+
+  // Done state
+  againButton: {
+    backgroundColor: colors.rose,
+    borderRadius: radii.lg,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  againButtonText: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: colors.textInverse,
+  },
+
+  // Countdown overlay
   countdownOverlay: {
     position: 'absolute',
     top: 0,
@@ -963,13 +1023,13 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     zIndex: 100,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    backgroundColor: 'rgba(45, 42, 38, 0.7)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   countdownText: {
-    fontSize: 96,
+    fontSize: 120,
     fontWeight: '800',
-    color: '#FFFFFF',
+    color: colors.rose,
   },
 });

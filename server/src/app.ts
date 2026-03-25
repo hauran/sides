@@ -10,6 +10,7 @@ import recordingsRoutes from "./routes/recordings.js";
 import usersRoutes from "./routes/users.js";
 import ttsRoutes from "./routes/tts.js";
 import uploadRoutes from "./routes/upload.js";
+import coversRoutes from "./routes/covers.js";
 
 const app = express();
 
@@ -32,6 +33,7 @@ app.use("/api", recordingsRoutes); // /api/lines/:lineId/recordings and /api/rec
 app.use("/api/users", usersRoutes);
 app.use("/api/tts", ttsRoutes);
 app.use("/api/plays", uploadRoutes);
+app.use("/api/covers", coversRoutes);
 
 // 404 handler
 app.use((_req, res) => {

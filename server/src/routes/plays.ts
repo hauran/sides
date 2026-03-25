@@ -193,4 +193,69 @@ router.delete("/:id/assign/:characterId", authMiddleware, async (req: Request, r
   }
 });
 
+// PATCH /api/plays/:id — update play title
+router.patch("/:id", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { id: playId } = req.params;
+    const { title } = req.body;
+
+    const updates: Record<string, string> = {};
+    if (title && typeof title === "string") updates.title = title;
+
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: "No valid fields to update" });
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("plays")
+      .update(updates)
+      .eq("id", playId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error("Error updating play:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// DELETE /api/plays/:id/leave — remove current user from play (doesn't delete the play)
+router.delete("/:id/leave", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const { id: playId } = req.params;
+
+    // Remove user's character assignments for this play
+    const { data: characters } = await supabase
+      .from("characters")
+      .select("id")
+      .eq("play_id", playId);
+
+    if (characters && characters.length > 0) {
+      const charIds = characters.map((c) => c.id);
+      await supabase
+        .from("character_assignments")
+        .delete()
+        .in("character_id", charIds)
+        .eq("user_id", userId);
+    }
+
+    // Remove play membership
+    const { error } = await supabase
+      .from("play_members")
+      .delete()
+      .eq("play_id", playId)
+      .eq("user_id", userId);
+
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Error leaving play:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 export default router;

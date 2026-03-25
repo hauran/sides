@@ -1,8 +1,17 @@
 import { Router, Request, Response } from "express";
 import multer from "multer";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 import Anthropic from "@anthropic-ai/sdk";
+import sharp from "sharp";
+import * as mupdf from "mupdf";
 import supabase from "../db/index.js";
 import { authMiddleware } from "../middleware/auth.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const COVERS_DIR = path.join(__dirname, "../../uploads/covers");
 
 const router = Router();
 
@@ -23,6 +32,7 @@ interface ParsedScene {
 }
 
 interface ParsedScript {
+  title: string;
   characters: string[];
   scenes: ParsedScene[];
 }
@@ -31,6 +41,7 @@ const SYSTEM_PROMPT = `You are a script parser. Given a theatrical script (as a 
 
 Return a JSON object with this exact structure:
 {
+  "title": "The Play Title",
   "characters": ["CHARACTER_NAME_1", "CHARACTER_NAME_2", ...],
   "scenes": [
     {
@@ -43,6 +54,7 @@ Return a JSON object with this exact structure:
 }
 
 Rules:
+- "title" is the play/musical title as it appears on the cover page or title page. Use proper title case (e.g. "Romeo and Juliet", "Seussical the Musical"). If no clear title page, derive it from context.
 - Character names should be UPPERCASE
 - Stage directions have character: null and type: "stage_direction"
 - Dialogue has the character name and type: "dialogue"
@@ -151,6 +163,47 @@ async function parseScriptPdf(pdfBuffer: Buffer): Promise<ParsedScript> {
   return parsed;
 }
 
+async function generateCoverFromPdf(playId: string, pdfBuffer: Buffer) {
+  try {
+    if (!fs.existsSync(COVERS_DIR)) {
+      fs.mkdirSync(COVERS_DIR, { recursive: true });
+    }
+    const jpgPath = path.join(COVERS_DIR, `${playId}.jpg`);
+    if (fs.existsSync(jpgPath)) return; // Already generated
+
+    // Render first page of PDF to a pixmap
+    const doc = mupdf.Document.openDocument(pdfBuffer, "application/pdf");
+    const page = doc.loadPage(0);
+    const pixmap = page.toPixmap(
+      mupdf.Matrix.scale(2, 2), // 2x scale for good resolution
+      mupdf.ColorSpace.DeviceRGB,
+      false, // no alpha
+      true   // annots
+    );
+    const pngBuffer = pixmap.asPNG();
+
+    // Smart crop to card dimensions
+    await sharp(pngBuffer)
+      .resize(800, 400, {
+        fit: "cover",
+        position: sharp.strategy.attention,
+      })
+      .jpeg({ quality: 85 })
+      .toFile(jpgPath);
+
+    // Update play record
+    await supabase
+      .from("plays")
+      .update({ cover_uri: `/api/covers/${playId}/image` })
+      .eq("id", playId);
+
+    console.log(`[cover:${playId}] Generated cover from PDF first page`);
+  } catch (err) {
+    console.error(`[cover:${playId}] Failed to generate cover from PDF:`, err);
+    // Non-fatal — play still works without a cover
+  }
+}
+
 async function updateProgress(playId: string, progress: string) {
   console.log(`[bg:${playId}] ${progress}`);
   await supabase.from("plays").update({ progress }).eq("id", playId);
@@ -165,6 +218,12 @@ async function processPlayInBackground(playId: string, pdfBuffer: Buffer) {
 
     const totalLines = parsed.scenes.reduce((sum, s) => sum + s.lines.length, 0);
     await updateProgress(playId, `Found ${parsed.characters.length} characters and ${parsed.scenes.length} scenes (${totalLines} lines)`);
+
+    // Update title if AI derived a better one from the script's cover page
+    if (parsed.title) {
+      await supabase.from("plays").update({ title: parsed.title }).eq("id", playId);
+      console.log(`[bg:${playId}] AI-derived title: "${parsed.title}"`);
+    }
 
     // Create characters
     const characterRows = parsed.characters.map((name) => ({
@@ -216,6 +275,9 @@ async function processPlayInBackground(playId: string, pdfBuffer: Buffer) {
         if (lineErr) throw lineErr;
       }
     }
+
+    // Generate cover from PDF first page
+    await generateCoverFromPdf(playId, pdfBuffer);
 
     // Mark play as ready
     const { error: updateErr } = await supabase

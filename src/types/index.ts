@@ -14,6 +14,7 @@ export interface Play {
   script_uri: string | null;
   status: 'processing' | 'ready' | 'failed';
   progress: string | null;
+  cover_uri: string | null;
   created_at: string;
 }
 
