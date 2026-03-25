@@ -14,7 +14,12 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.sides.app"
+      "bundleIdentifier": "com.sides.app",
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "Sides needs speech recognition to auto-advance when you speak your lines.",
+        "NSMicrophoneUsageDescription": "Sides needs microphone access to listen while you rehearse your lines.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -23,7 +28,13 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "package": "com.sides.app"
+      "package": "com.sides.app",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png",
@@ -31,7 +42,21 @@
     },
     "plugins": [
       "expo-router",
-      "expo-audio"
-    ]
+      "expo-audio",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Sides needs microphone access to listen while you rehearse your lines.",
+          "speechRecognitionPermission": "Sides needs speech recognition to auto-advance when you speak your lines."
+        }
+      ],
+      "expo-asset"
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "9adb6c9d-2da9-43b6-8627-c5e8d5ed8285"
+      }
+    }
   }
 }

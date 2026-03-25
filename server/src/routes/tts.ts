@@ -1,5 +1,17 @@
 import { Router, Request, Response } from "express";
+import crypto from "crypto";
 import { authMiddleware } from "../middleware/auth.js";
+
+// In-memory TTS audio cache keyed by hash(character + text)
+const audioCache = new Map<string, Buffer>();
+
+function cacheKey(character: string, text: string): string {
+  return crypto
+    .createHash("sha256")
+    .update(character + ":" + text)
+    .digest("hex")
+    .slice(0, 16);
+}
 
 const VOICE_MAP: Record<string, string> = {
   ROMEO: "pNInz6obpgDQGcFmaJgB",
@@ -22,14 +34,30 @@ router.post("/", authMiddleware, async (req: Request, res: Response) => {
       return;
     }
 
+    const charKey = (character ?? "DEFAULT").toUpperCase();
+    const key = cacheKey(charKey, text);
+
+    // Check cache first
+    const cached = audioCache.get(key);
+    if (cached) {
+      console.log(`TTS cache hit [POST] key=${key} character=${charKey}`);
+      res.set({
+        "Content-Type": "audio/mpeg",
+        "Content-Length": cached.length.toString(),
+      });
+      res.send(cached);
+      return;
+    }
+
     const apiKey = process.env.ELEVENLABS_API_KEY;
     if (!apiKey) {
       res.status(503).json({ error: "ElevenLabs API key not configured" });
       return;
     }
 
-    const voiceId =
-      VOICE_MAP[(character ?? "DEFAULT").toUpperCase()] ?? VOICE_MAP.DEFAULT;
+    const voiceId = VOICE_MAP[charKey] ?? VOICE_MAP.DEFAULT;
+
+    console.log(`TTS cache miss [POST] key=${key} character=${charKey} — fetching from ElevenLabs`);
 
     const response = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
@@ -60,6 +88,9 @@ router.post("/", authMiddleware, async (req: Request, res: Response) => {
 
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+
+    // Store in cache
+    audioCache.set(key, buffer);
 
     res.set({
       "Content-Type": "audio/mpeg",
@@ -83,14 +114,30 @@ router.get("/", authMiddleware, async (req: Request, res: Response) => {
       return;
     }
 
+    const charKey = (character ?? "DEFAULT").toUpperCase();
+    const key = cacheKey(charKey, text);
+
+    // Check cache first
+    const cached = audioCache.get(key);
+    if (cached) {
+      console.log(`TTS cache hit [GET] key=${key} character=${charKey}`);
+      res.set({
+        "Content-Type": "audio/mpeg",
+        "Content-Length": cached.length.toString(),
+      });
+      res.send(cached);
+      return;
+    }
+
     const apiKey = process.env.ELEVENLABS_API_KEY;
     if (!apiKey) {
       res.status(503).json({ error: "ElevenLabs API key not configured" });
       return;
     }
 
-    const voiceId =
-      VOICE_MAP[(character ?? "DEFAULT").toUpperCase()] ?? VOICE_MAP.DEFAULT;
+    const voiceId = VOICE_MAP[charKey] ?? VOICE_MAP.DEFAULT;
+
+    console.log(`TTS cache miss [GET] key=${key} character=${charKey} — fetching from ElevenLabs`);
 
     const response = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
@@ -121,6 +168,9 @@ router.get("/", authMiddleware, async (req: Request, res: Response) => {
 
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+
+    // Store in cache
+    audioCache.set(key, buffer);
 
     res.set({
       "Content-Type": "audio/mpeg",

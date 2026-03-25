@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Animated } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { createAudioPlayer, AudioPlayer } from 'expo-audio';
+import { createAudioPlayer, AudioPlayer, setAudioModeAsync } from 'expo-audio';
 import { ActivityIndicator } from 'react-native';
 import { useSceneStore } from '../../src/store/useSceneStore';
 import { DEV_USER_ID, api, setDevUserId } from '../../src/lib/api';
 import { createLineSpeaker } from '../../src/lib/tts';
+import { useTranscription } from '../../src/hooks/useTranscription';
+import { isLineMatch } from '../../src/lib/matchLine';
 import type { Line } from '../../src/types';
 
 type RehearsalState = 'idle' | 'loading' | 'playing' | 'my_turn' | 'paused' | 'done';
@@ -32,6 +34,12 @@ export default function RehearsalScreen() {
   const [currentLineIndex, setCurrentLineIndex] = useState(0);
   const [linesLoaded, setLinesLoaded] = useState(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const micPulseAnim = useRef(new Animated.Value(0.4)).current;
+
+  // Speech recognition for auto-advance
+  const { transcript, isListening, isAvailable: isSpeechAvailable, start: startListening, stop: stopListening, error: speechError } = useTranscription();
+  // Guard against double-advancing: track which line index was already auto-advanced
+  const autoAdvancedRef = useRef(-1);
 
   useEffect(() => {
     setDevUserId(DEV_USER_ID);
@@ -52,6 +60,71 @@ export default function RehearsalScreen() {
 
   const lines = sceneId ? getLinesForScene(sceneId) : [];
   const currentLine = lines[currentLineIndex] as Line | undefined;
+
+  // Start/stop listening based on rehearsal state
+  const listenDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevStateRef = useRef<RehearsalState>('idle');
+  useEffect(() => {
+    const wasMyTurn = prevStateRef.current === 'my_turn';
+    prevStateRef.current = state;
+
+    if (state === 'my_turn' && isSpeechAvailable) {
+      autoAdvancedRef.current = -1;
+      listenDelayRef.current = setTimeout(async () => {
+        try {
+          await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+        } catch (e) { console.warn('[Audio] mode switch failed:', e); }
+        startListening();
+      }, 800);
+    } else if (wasMyTurn) {
+      // Only clean up when leaving my_turn, not on every non-my_turn state
+      if (listenDelayRef.current) {
+        clearTimeout(listenDelayRef.current);
+        listenDelayRef.current = null;
+      }
+      stopListening();
+      setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => {});
+    }
+  }, [state, isSpeechAvailable]);
+
+  // Auto-advance when transcript matches expected line
+  useEffect(() => {
+    if (state !== 'my_turn') return;
+    if (!currentLine?.text || !transcript) return;
+    if (autoAdvancedRef.current === currentLineIndex) return;
+
+    if (isLineMatch(transcript, currentLine.text)) {
+      autoAdvancedRef.current = currentLineIndex;
+      stopListening();
+      // Small delay so the user sees the match before advancing
+      setTimeout(() => {
+        advanceFrom(currentLineIndex);
+      }, 400);
+    }
+  }, [transcript, state, currentLineIndex, currentLine?.text]);
+
+  // Pulsing animation for the mic indicator dot
+  useEffect(() => {
+    if (isListening) {
+      const pulse = Animated.loop(
+        Animated.sequence([
+          Animated.timing(micPulseAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
+          Animated.timing(micPulseAnim, { toValue: 0.4, duration: 600, useNativeDriver: true }),
+        ])
+      );
+      pulse.start();
+      return () => pulse.stop();
+    } else {
+      micPulseAnim.setValue(0.4);
+    }
+  }, [isListening]);
+
+  // Stop listening when leaving the screen
+  useEffect(() => {
+    return () => {
+      stopListening();
+    };
+  }, []);
 
   // Pulse animation for my_turn
   useEffect(() => {
@@ -90,7 +163,7 @@ export default function RehearsalScreen() {
     }
   }
 
-  function playOtherLine(index: number) {
+  async function playOtherLine(index: number) {
     const line = lines[index];
     if (!line) return;
 
@@ -99,13 +172,14 @@ export default function RehearsalScreen() {
 
     setState('loading');
     try {
+      // Ensure audio session is in playback mode
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
       const player = createLineSpeaker(line.text, line.character_name ?? 'DEFAULT');
       currentPlayer.current = player;
 
       player.addListener('playbackStatusUpdate', (status) => {
         // Ignore events from stale players
         if (playIdRef.current !== thisPlayId) return;
-
         if (status.playing) {
           setState('playing');
         }
@@ -154,6 +228,7 @@ export default function RehearsalScreen() {
 
   function handleAdvance() {
     stopCurrentAudio();
+    stopListening();
     advanceFrom(currentLineIndex);
   }
 
@@ -165,6 +240,7 @@ export default function RehearsalScreen() {
 
   function handlePause() {
     stopCurrentAudio();
+    stopListening();
     setState('paused');
   }
 
@@ -213,7 +289,7 @@ export default function RehearsalScreen() {
                 : `Line ${currentLineIndex + 1} of ${lines.length}`}
             </Text>
           </View>
-          <Pressable onPress={() => { stopCurrentAudio(); router.back(); }} style={styles.closeX}>
+          <Pressable onPress={() => { stopCurrentAudio(); stopListening(); router.back(); }} style={styles.closeX}>
             <Text style={styles.closeXText}>✕</Text>
           </Pressable>
         </View>
@@ -267,13 +343,30 @@ export default function RehearsalScreen() {
           </View>
         )}
         {state === 'my_turn' && (
-          <View style={styles.footerRow}>
-            <Pressable style={styles.pauseButton} onPress={handlePause}>
-              <Text style={styles.pauseButtonText}>⏸</Text>
-            </Pressable>
-            <Pressable style={[styles.advanceButton, styles.flex]} onPress={handleAdvance}>
-              <Text style={styles.advanceButtonText}>Done — Next Line</Text>
-            </Pressable>
+          <View style={styles.myTurnFooter}>
+            {isListening && (
+              <View style={styles.micRow}>
+                <Animated.View style={[styles.micDot, { opacity: micPulseAnim }]} />
+                <Text style={styles.micLabel} numberOfLines={1}>
+                  {transcript
+                    ? `"${transcript.length > 50 ? '...' + transcript.slice(-50) : transcript}"`
+                    : 'Listening...'}
+                </Text>
+              </View>
+            )}
+            {!isListening && isSpeechAvailable && speechError && (
+              <View style={styles.micRow}>
+                <Text style={styles.micErrorText}>{speechError}</Text>
+              </View>
+            )}
+            <View style={styles.footerRow}>
+              <Pressable style={styles.pauseButton} onPress={handlePause}>
+                <Text style={styles.pauseButtonText}>⏸</Text>
+              </Pressable>
+              <Pressable style={[styles.advanceButton, styles.flex]} onPress={handleAdvance}>
+                <Text style={styles.advanceButtonText}>Done — Next Line</Text>
+              </Pressable>
+            </View>
           </View>
         )}
         {state === 'loading' && (
@@ -491,5 +584,30 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#534AB7',
     fontWeight: '500',
+  },
+  myTurnFooter: {
+    gap: 8,
+  },
+  micRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 4,
+  },
+  micDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#E53935',
+  },
+  micLabel: {
+    flex: 1,
+    fontSize: 13,
+    color: '#999999',
+    fontStyle: 'italic',
+  },
+  micErrorText: {
+    fontSize: 12,
+    color: '#E53935',
   },
 });
