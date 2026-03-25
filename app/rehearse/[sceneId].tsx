@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Animated } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { createAudioPlayer, AudioPlayer, setAudioModeAsync } from 'expo-audio';
 import { ActivityIndicator } from 'react-native';
 import { useSceneStore } from '../../src/store/useSceneStore';
-import { DEV_USER_ID, api, setDevUserId } from '../../src/lib/api';
+import { DEV_USER_ID, api, setDevUserId, uploadRecording } from '../../src/lib/api';
 import { createLineSpeaker } from '../../src/lib/tts';
 import { useTranscription, TranscriptionError } from '../../src/hooks/useTranscription';
+import { useRecording } from '../../src/hooks/useRecording';
 import { isLineMatch } from '../../src/lib/matchLine';
+import { useCastStore } from '../../src/store/useCastStore';
 import type { Line } from '../../src/types';
 
 const TRANSCRIPTION_ERROR_MESSAGES: Record<TranscriptionError, string> = {
@@ -18,7 +20,14 @@ const TRANSCRIPTION_ERROR_MESSAGES: Record<TranscriptionError, string> = {
 };
 
 type RehearsalState = 'idle' | 'loading' | 'playing' | 'my_turn' | 'paused' | 'done';
-type RehearsalMode = 'learning' | 'practice';
+type RehearsalMode = 'learning' | 'practice' | 'recording';
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
 
 export default function RehearsalScreen() {
   const { sceneId, characterIds: characterIdsParam } = useLocalSearchParams<{
@@ -45,6 +54,14 @@ export default function RehearsalScreen() {
   const [hintLevel, setHintLevel] = useState(0); // 0 = hidden, 1+ = words revealed
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const micPulseAnim = useRef(new Animated.Value(0.4)).current;
+
+  // Recording mode state
+  const { startRecording, stopRecording, isRecording, durationMillis } = useRecording();
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const recordingActiveRef = useRef(false);
+  const recPulseAnim = useRef(new Animated.Value(1)).current;
+  const addRecording = useCastStore((s) => s.addRecording);
 
   // Speech recognition for auto-advance
   const { transcript, isListening, isAvailable: isSpeechAvailable, start: startListening, stop: stopListening, error: speechError } = useTranscription();
@@ -74,6 +91,46 @@ export default function RehearsalScreen() {
     [sceneId, allLines]
   );
   const currentLine = lines[currentLineIndex] as Line | undefined;
+
+  // Helper: stop recording and upload the result
+  const stopAndUploadRecording = useCallback(async (lineId: string) => {
+    if (!recordingActiveRef.current) return;
+    recordingActiveRef.current = false;
+    try {
+      const uri = await stopRecording();
+      if (uri) {
+        setIsUploading(true);
+        try {
+          const recording = await uploadRecording(lineId, uri);
+          addRecording(recording);
+        } catch (err) {
+          console.error('Failed to upload recording:', err);
+        } finally {
+          setIsUploading(false);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to stop recording:', err);
+    }
+  }, [stopRecording, addRecording]);
+
+  // Helper: start recording for a line (with optional countdown for first line)
+  const beginRecordingForLine = useCallback(async (isFirstLine: boolean) => {
+    if (isFirstLine) {
+      // Countdown 3, 2, 1 before starting
+      for (let i = 3; i >= 1; i--) {
+        setCountdown(i);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      setCountdown(null);
+    }
+    try {
+      await startRecording();
+      recordingActiveRef.current = true;
+    } catch (err) {
+      console.error('Failed to start recording:', err);
+    }
+  }, [startRecording]);
 
   // Start/stop listening based on rehearsal state
   const listenDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -110,12 +167,20 @@ export default function RehearsalScreen() {
     if (isLineMatch(transcript, currentLine.text)) {
       autoAdvancedRef.current = currentLineIndex;
       stopListening();
-      // Small delay so the user sees the match before advancing
-      setTimeout(() => {
-        advanceFrom(currentLineIndex);
-      }, 400);
+
+      if (mode === 'recording' && recordingActiveRef.current) {
+        // Stop recording and upload, then advance
+        stopAndUploadRecording(currentLine.id).then(() => {
+          advanceFrom(currentLineIndex);
+        });
+      } else {
+        // Small delay so the user sees the match before advancing
+        setTimeout(() => {
+          advanceFrom(currentLineIndex);
+        }, 400);
+      }
     }
-  }, [transcript, state, currentLineIndex, currentLine?.text]);
+  }, [transcript, state, currentLineIndex, currentLine?.text, mode]);
 
   // Pulsing animation for the mic indicator dot
   useEffect(() => {
@@ -132,6 +197,22 @@ export default function RehearsalScreen() {
       micPulseAnim.setValue(0.4);
     }
   }, [isListening]);
+
+  // Pulsing animation for recording indicator
+  useEffect(() => {
+    if (isRecording) {
+      const pulse = Animated.loop(
+        Animated.sequence([
+          Animated.timing(recPulseAnim, { toValue: 0.3, duration: 500, useNativeDriver: true }),
+          Animated.timing(recPulseAnim, { toValue: 1, duration: 500, useNativeDriver: true }),
+        ])
+      );
+      pulse.start();
+      return () => pulse.stop();
+    } else {
+      recPulseAnim.setValue(1);
+    }
+  }, [isRecording]);
 
   // Stop listening when leaving the screen
   useEffect(() => {
@@ -166,6 +247,18 @@ export default function RehearsalScreen() {
     }
   }, [currentLineIndex, state]);
 
+  // Track whether recording mode just started for the first line countdown
+  const isFirstRecordingLineRef = useRef(false);
+
+  // Start recording when entering my_turn in recording mode
+  useEffect(() => {
+    if (state === 'my_turn' && mode === 'recording' && !recordingActiveRef.current && countdown === null) {
+      const isFirst = isFirstRecordingLineRef.current;
+      isFirstRecordingLineRef.current = false;
+      beginRecordingForLine(isFirst);
+    }
+  }, [state, mode, countdown]);
+
   const playIdRef = useRef(0);
 
   function stopCurrentAudio() {
@@ -186,7 +279,7 @@ export default function RehearsalScreen() {
 
     setState('loading');
     try {
-      // Ensure audio session is in playback mode (needed after speech recognition changes it)
+      // Ensure audio session is in playback mode (needed after recording/speech recognition)
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
       const player = createLineSpeaker(line.text, line.character_name ?? 'DEFAULT');
       currentPlayer.current = player;
@@ -229,6 +322,9 @@ export default function RehearsalScreen() {
   }
 
   function startRehearsal() {
+    if (mode === 'recording') {
+      isFirstRecordingLineRef.current = true;
+    }
     activateLine(0);
   }
 
@@ -244,18 +340,41 @@ export default function RehearsalScreen() {
   function handleAdvance() {
     stopCurrentAudio();
     stopListening();
-    advanceFrom(currentLineIndex);
+
+    if (mode === 'recording' && recordingActiveRef.current && currentLine) {
+      // Stop recording, upload, then advance
+      stopAndUploadRecording(currentLine.id).then(() => {
+        advanceFrom(currentLineIndex);
+      });
+    } else {
+      advanceFrom(currentLineIndex);
+    }
   }
 
   function handleTapLine(index: number) {
     if (state === 'done') return;
     stopCurrentAudio();
+
+    // In recording mode, stop any active recording before jumping back
+    if (mode === 'recording' && recordingActiveRef.current && currentLine) {
+      // Discard current recording when re-recording (don't upload)
+      recordingActiveRef.current = false;
+      stopRecording().catch(() => {});
+    }
+
     activateLine(index);
   }
 
   function handlePause() {
     stopCurrentAudio();
     stopListening();
+
+    // Pause recording if active
+    if (mode === 'recording' && recordingActiveRef.current && currentLine) {
+      recordingActiveRef.current = false;
+      stopRecording().catch(() => {});
+    }
+
     setState('paused');
   }
 
@@ -295,6 +414,7 @@ export default function RehearsalScreen() {
     const isCurrent = index === currentLineIndex && active;
     const isPast = active && index < currentLineIndex;
 
+    if (isCurrent && state === 'my_turn' && mode === 'recording') return [styles.lineRowBase, styles.lineRowRecording];
     if (isCurrent && state === 'my_turn') return [styles.lineRowBase, styles.lineRowMyTurn];
     if (isCurrent && state === 'paused') return [styles.lineRowBase, styles.lineRowPaused];
     if (isCurrent && (state === 'playing' || state === 'loading')) return [styles.lineRowBase, styles.lineRowPlaying];
@@ -345,8 +465,21 @@ export default function RehearsalScreen() {
           >
             <Text style={[styles.modeButtonText, mode === 'practice' && styles.modeButtonTextActive]}>Practice</Text>
           </Pressable>
+          <Pressable
+            style={[styles.modeButton, mode === 'recording' && styles.modeButtonActiveRecording]}
+            onPress={() => setMode('recording')}
+          >
+            <Text style={[styles.modeButtonText, mode === 'recording' && styles.modeButtonTextActiveRecording]}>Recording</Text>
+          </Pressable>
         </View>
       </View>
+
+      {/* Countdown overlay */}
+      {countdown !== null && (
+        <View style={styles.countdownOverlay}>
+          <Text style={styles.countdownText}>{countdown}</Text>
+        </View>
+      )}
 
       <ScrollView
         ref={scrollRef}
@@ -364,7 +497,7 @@ export default function RehearsalScreen() {
             <Animated.View
               style={[
                 getLineStyle(line, index),
-                index === currentLineIndex && state === 'my_turn'
+                index === currentLineIndex && state === 'my_turn' && mode !== 'recording'
                   ? { opacity: pulseAnim }
                   : null,
               ]}
@@ -402,6 +535,21 @@ export default function RehearsalScreen() {
         )}
         {state === 'my_turn' && (
           <View style={styles.myTurnFooter}>
+            {/* Recording indicator */}
+            {mode === 'recording' && isRecording && (
+              <View style={styles.micRow}>
+                <Animated.View style={[styles.recDot, { opacity: recPulseAnim }]} />
+                <Text style={styles.recLabel}>
+                  Recording... {formatElapsed(durationMillis)}
+                </Text>
+              </View>
+            )}
+            {mode === 'recording' && isUploading && (
+              <View style={styles.micRow}>
+                <ActivityIndicator size="small" color="#E53935" />
+                <Text style={styles.recLabel}>Uploading...</Text>
+              </View>
+            )}
             {isListening && (
               <View style={styles.micRow}>
                 <Animated.View style={[styles.micDot, { opacity: micPulseAnim }]} />
@@ -451,7 +599,7 @@ export default function RehearsalScreen() {
             </Pressable>
             <View style={[styles.listeningBar, styles.flex]}>
               <Text style={styles.listeningText}>
-                🔊 {currentLine?.character_name ?? 'Other'} is speaking...
+                {currentLine?.character_name ?? 'Other'} is speaking...
               </Text>
             </View>
           </View>
@@ -544,6 +692,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF8ED',
     borderLeftWidth: 3,
     borderLeftColor: '#EF9F27',
+  },
+  lineRowRecording: {
+    backgroundColor: '#FFF0F0',
+    borderLeftWidth: 3,
+    borderLeftColor: '#E53935',
   },
   lineRowPaused: {
     backgroundColor: '#F5F5F5',
@@ -673,6 +826,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#E53935',
   },
+  recDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#E53935',
+  },
+  recLabel: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#E53935',
+  },
   modeSwitcher: {
     flexDirection: 'row',
     marginTop: 8,
@@ -694,6 +859,14 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 1 },
     elevation: 2,
   },
+  modeButtonActiveRecording: {
+    backgroundColor: '#FFF0F0',
+    shadowColor: '#E53935',
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 2,
+  },
   modeButtonText: {
     fontSize: 13,
     fontWeight: '600',
@@ -701,6 +874,9 @@ const styles = StyleSheet.create({
   },
   modeButtonTextActive: {
     color: '#534AB7',
+  },
+  modeButtonTextActiveRecording: {
+    color: '#E53935',
   },
   hiddenLineText: {
     fontSize: 16,
@@ -722,5 +898,21 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#534AB7',
+  },
+  countdownOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 100,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  countdownText: {
+    fontSize: 96,
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
 });

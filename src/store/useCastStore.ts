@@ -151,7 +151,17 @@ export const useCastStore = create<CastState>((set, get) => ({
     }
   },
 
-  fetchRecordings: async (_lineId: string) => {
-    // TODO: Fetch from API
+  fetchRecordings: async (lineId: string) => {
+    try {
+      const recordings = await api<Recording[]>(`/lines/${lineId}/recordings`);
+      set((state) => ({
+        recordings: {
+          ...state.recordings,
+          ...Object.fromEntries(recordings.map((r) => [r.id, r])),
+        },
+      }));
+    } catch (err) {
+      console.error('Failed to fetch recordings:', err);
+    }
   },
 }));
