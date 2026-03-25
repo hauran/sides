@@ -79,7 +79,22 @@
 
 ---
 
-## Milestone 7: Peer Invites & Cast Collaboration
+## Milestone 7: Script Navigation & Bookmarks
+
+- Jump to next line: "Next" button in toolbar scrolls to and highlights the user's next upcoming line
+- Jump to previous line: "Prev" button scrolls back to the user's previous line
+- Line search: search bar filters lines by text content, highlights matches in-place
+- Scene search: search across all scenes in a play, jump directly to a matching line
+- Bookmarks: tap a bookmark icon on any line to pin it for quick access
+- Bookmarks panel: slide-out or bottom sheet showing all bookmarked lines, tap to jump
+- Cue line highlighting: option to highlight the line before each of your lines (your "cue")
+- Line count summary: "You have 24 lines in this scene" shown in scene header
+
+**Done when:** User can quickly navigate to their lines via next/prev buttons, search for specific dialogue, bookmark important lines, and see cue lines highlighted.
+
+---
+
+## Milestone 8: Peer Invites & Cast Collaboration
 
 - Invite flow: tap "Invite" on a character → generate shareable deep link (`sides://invite/{playId}/{characterId}`)
 - Invited user opens link → creates account / logs in → joins Play as PlayMember with character assigned
@@ -91,7 +106,7 @@
 
 ---
 
-## Milestone 8: Social — Reactions & Notifications
+## Milestone 9: Social — Reactions & Notifications
 
 - Reaction on recordings: emoji (🔥, 😂, 💀, 👏, ❤️) and/or short notes
 - Reactions visible on recordings in the app
@@ -103,7 +118,7 @@
 
 ---
 
-## Milestone 9: Polish & Ship
+## Milestone 10: Polish & Ship
 
 - Design language applied: purple/amber palette, serif for script lines, sans-serif for UI chrome
 - Avatar component: user photo or initials fallback

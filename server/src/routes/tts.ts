@@ -128,4 +128,19 @@ router.get("/", authMiddleware, async (req: Request, res: Response) => {
   }
 });
 
+// DELETE /api/tts/cache?character=XXX&text=YYY — invalidate a cached TTS entry
+router.delete("/cache", authMiddleware, (req: Request, res: Response) => {
+  const character = req.query.character as string;
+  const text = req.query.text as string;
+  if (!character || !text) {
+    res.status(400).json({ error: "character and text query params are required" });
+    return;
+  }
+  const charKey = character.toUpperCase();
+  const key = cacheKey(charKey, text);
+  const deleted = audioCache.delete(key);
+  console.log(`TTS cache invalidate key=${key} character=${charKey} deleted=${deleted}`);
+  res.json({ deleted });
+});
+
 export default router;

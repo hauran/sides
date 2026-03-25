@@ -10,6 +10,7 @@ import { useTranscription, TranscriptionError } from '../../src/hooks/useTranscr
 import { useRecording } from '../../src/hooks/useRecording';
 import { isLineMatch } from '../../src/lib/matchLine';
 import { useCastStore } from '../../src/store/useCastStore';
+import { LineEditor } from '../../src/components/LineEditor';
 import type { Line } from '../../src/types';
 
 const TRANSCRIPTION_ERROR_MESSAGES: Record<TranscriptionError, string> = {
@@ -52,6 +53,7 @@ export default function RehearsalScreen() {
   const [currentLineIndex, setCurrentLineIndex] = useState(0);
   const [linesLoaded, setLinesLoaded] = useState(false);
   const [hintLevel, setHintLevel] = useState(0); // 0 = hidden, 1+ = words revealed
+  const [editingLine, setEditingLine] = useState<Line | null>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const micPulseAnim = useRef(new Animated.Value(0.4)).current;
 
@@ -378,6 +380,36 @@ export default function RehearsalScreen() {
     setState('paused');
   }
 
+  function handleLongPressLine(index: number) {
+    // Only allow editing in idle, paused, or my_turn states
+    if (state !== 'idle' && state !== 'paused' && state !== 'my_turn') return;
+    const line = lines[index];
+    if (!line) return;
+    setEditingLine(line);
+  }
+
+  async function handleSaveLineEdit(lineId: string, newText: string) {
+    const line = editingLine;
+    // Persist to server
+    await api<Line>(`/lines/${lineId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ text: newText }),
+    });
+    // Update local store
+    useSceneStore.getState().updateLine(lineId, { text: newText, edited: true });
+    // Invalidate TTS cache for the old text
+    if (line?.character_name) {
+      try {
+        await api(`/tts/cache?character=${encodeURIComponent(line.character_name)}&text=${encodeURIComponent(line.text)}`, {
+          method: 'DELETE',
+        });
+      } catch (err) {
+        // Non-critical — log and continue
+        console.warn('TTS cache invalidation failed:', err);
+      }
+    }
+  }
+
   function handleResume() {
     const line = lines[currentLineIndex];
     if (!line) return;
@@ -490,6 +522,7 @@ export default function RehearsalScreen() {
           <Pressable
             key={line.id}
             onPress={() => handleTapLine(index)}
+            onLongPress={() => handleLongPressLine(index)}
             onLayout={(e) => {
               lineRefs.current[line.id] = e.nativeEvent.layout.y;
             }}
@@ -504,14 +537,19 @@ export default function RehearsalScreen() {
             >
               {line.character_id ? (
                 <>
-                  <Text
-                    style={[
-                      styles.characterName,
-                      isMyLine(line) && styles.characterNameMine,
-                    ]}
-                  >
-                    {line.character_name ?? 'UNKNOWN'}
-                  </Text>
+                  <View style={styles.characterRow}>
+                    <Text
+                      style={[
+                        styles.characterName,
+                        isMyLine(line) && styles.characterNameMine,
+                      ]}
+                    >
+                      {line.character_name ?? 'UNKNOWN'}
+                    </Text>
+                    {line.edited && (
+                      <Text style={styles.editedIndicator}>(edited)</Text>
+                    )}
+                  </View>
                   {shouldHideLine(line, index)
                     ? <Text style={styles.hiddenLineText}>
                         {index === currentLineIndex && state === 'my_turn' ? getHintText() : '• • •'}
@@ -616,6 +654,15 @@ export default function RehearsalScreen() {
           </Pressable>
         )}
       </View>
+
+      {editingLine && (
+        <LineEditor
+          line={editingLine}
+          visible={!!editingLine}
+          onClose={() => setEditingLine(null)}
+          onSave={handleSaveLineEdit}
+        />
+      )}
     </View>
   );
 }
@@ -706,6 +753,11 @@ const styles = StyleSheet.create({
   lineRowDone: {
     opacity: 0.4,
   },
+  characterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   characterName: {
     fontSize: 11,
     fontWeight: '700',
@@ -715,6 +767,11 @@ const styles = StyleSheet.create({
   },
   characterNameMine: {
     color: '#EF9F27',
+  },
+  editedIndicator: {
+    fontSize: 10,
+    color: '#999999',
+    fontStyle: 'italic',
   },
   lineText: {
     fontSize: 16,
