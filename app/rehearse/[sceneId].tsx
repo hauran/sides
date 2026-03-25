@@ -18,6 +18,7 @@ const TRANSCRIPTION_ERROR_MESSAGES: Record<TranscriptionError, string> = {
 };
 
 type RehearsalState = 'idle' | 'loading' | 'playing' | 'my_turn' | 'paused' | 'done';
+type RehearsalMode = 'learning' | 'practice';
 
 export default function RehearsalScreen() {
   const { sceneId, characterIds: characterIdsParam } = useLocalSearchParams<{
@@ -38,8 +39,10 @@ export default function RehearsalScreen() {
   const currentPlayer = useRef<AudioPlayer | null>(null);
 
   const [state, setState] = useState<RehearsalState>('idle');
+  const [mode, setMode] = useState<RehearsalMode>('learning');
   const [currentLineIndex, setCurrentLineIndex] = useState(0);
   const [linesLoaded, setLinesLoaded] = useState(false);
+  const [hintLevel, setHintLevel] = useState(0); // 0 = hidden, 1+ = words revealed
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const micPulseAnim = useRef(new Animated.Value(0.4)).current;
 
@@ -216,6 +219,7 @@ export default function RehearsalScreen() {
 
   function activateLine(index: number) {
     setCurrentLineIndex(index);
+    setHintLevel(0);
     const line = lines[index];
     if (line && isMyLine(line)) {
       setState('my_turn');
@@ -261,6 +265,30 @@ export default function RehearsalScreen() {
     activateLine(currentLineIndex);
   }
 
+  const currentLineWords = useMemo(
+    () => currentLine?.text.split(/\s+/) ?? [],
+    [currentLine?.text]
+  );
+
+  function getHintText(): string {
+    if (hintLevel === 0) return '• • •';
+    if (hintLevel >= currentLineWords.length) return currentLine?.text ?? '';
+    return currentLineWords.slice(0, hintLevel).join(' ') + ' ...';
+  }
+
+  function handleHint() {
+    setHintLevel((prev) => Math.min(prev + 1, currentLineWords.length));
+  }
+
+  function shouldHideLine(line: Line, index: number): boolean {
+    if (mode !== 'practice') return false;
+    if (!isMyLine(line)) return false;
+    // Hide future lines and current line
+    const active = state !== 'idle' && state !== 'done';
+    if (!active) return true; // hide all my lines when not actively rehearsing
+    return index >= currentLineIndex;
+  }
+
   function getLineStyle(line: Line, index: number) {
     const isMine = isMyLine(line);
     const active = state !== 'idle';
@@ -304,6 +332,20 @@ export default function RehearsalScreen() {
             <Text style={styles.closeXText}>✕</Text>
           </Pressable>
         </View>
+        <View style={styles.modeSwitcher}>
+          <Pressable
+            style={[styles.modeButton, mode === 'learning' && styles.modeButtonActive]}
+            onPress={() => setMode('learning')}
+          >
+            <Text style={[styles.modeButtonText, mode === 'learning' && styles.modeButtonTextActive]}>Learning</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.modeButton, mode === 'practice' && styles.modeButtonActive]}
+            onPress={() => setMode('practice')}
+          >
+            <Text style={[styles.modeButtonText, mode === 'practice' && styles.modeButtonTextActive]}>Practice</Text>
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView
@@ -337,7 +379,12 @@ export default function RehearsalScreen() {
                   >
                     {line.character_name ?? 'UNKNOWN'}
                   </Text>
-                  <Text style={styles.lineText}>{line.text}</Text>
+                  {shouldHideLine(line, index)
+                    ? <Text style={styles.hiddenLineText}>
+                        {index === currentLineIndex && state === 'my_turn' ? getHintText() : '• • •'}
+                      </Text>
+                    : <Text style={styles.lineText}>{line.text}</Text>
+                  }
                 </>
               ) : (
                 <Text style={styles.stageDirection}>[{line.text}]</Text>
@@ -374,6 +421,11 @@ export default function RehearsalScreen() {
               <Pressable style={styles.pauseButton} onPress={handlePause}>
                 <Text style={styles.pauseButtonText}>⏸</Text>
               </Pressable>
+              {mode === 'practice' && (
+                <Pressable style={styles.hintButton} onPress={handleHint}>
+                  <Text style={styles.hintButtonText}>Hint</Text>
+                </Pressable>
+              )}
               <Pressable style={[styles.advanceButton, styles.flex]} onPress={handleAdvance}>
                 <Text style={styles.advanceButtonText}>Done — Next Line</Text>
               </Pressable>
@@ -620,5 +672,55 @@ const styles = StyleSheet.create({
   micErrorText: {
     fontSize: 12,
     color: '#E53935',
+  },
+  modeSwitcher: {
+    flexDirection: 'row',
+    marginTop: 8,
+    backgroundColor: '#F5F4FE',
+    borderRadius: 8,
+    padding: 2,
+  },
+  modeButton: {
+    flex: 1,
+    paddingVertical: 6,
+    alignItems: 'center',
+    borderRadius: 6,
+  },
+  modeButtonActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 2,
+  },
+  modeButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#999999',
+  },
+  modeButtonTextActive: {
+    color: '#534AB7',
+  },
+  hiddenLineText: {
+    fontSize: 16,
+    color: '#CCCCCC',
+    lineHeight: 24,
+    fontFamily: 'Georgia',
+    fontStyle: 'italic',
+  },
+  hintButton: {
+    width: 60,
+    backgroundColor: '#F5F4FE',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#EEEDFE',
+  },
+  hintButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#534AB7',
   },
 });
