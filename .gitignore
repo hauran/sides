@@ -43,3 +43,6 @@ yarn-error.*
 
 # local env with secrets
 etc/env.local
+
+# uploaded files
+server/uploads/
