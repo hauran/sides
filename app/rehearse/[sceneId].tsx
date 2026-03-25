@@ -6,9 +6,16 @@ import { ActivityIndicator } from 'react-native';
 import { useSceneStore } from '../../src/store/useSceneStore';
 import { DEV_USER_ID, api, setDevUserId } from '../../src/lib/api';
 import { createLineSpeaker } from '../../src/lib/tts';
-import { useTranscription } from '../../src/hooks/useTranscription';
+import { useTranscription, TranscriptionError } from '../../src/hooks/useTranscription';
 import { isLineMatch } from '../../src/lib/matchLine';
 import type { Line } from '../../src/types';
+
+const TRANSCRIPTION_ERROR_MESSAGES: Record<TranscriptionError, string> = {
+  'mic-unavailable': 'Mic unavailable — tap "Done" to advance',
+  'not-available': 'Speech recognition requires a development build',
+  'permission-denied': 'Microphone permission denied',
+  'unknown': 'Speech recognition error',
+};
 
 type RehearsalState = 'idle' | 'loading' | 'playing' | 'my_turn' | 'paused' | 'done';
 
@@ -58,7 +65,11 @@ export default function RehearsalScreen() {
     };
   }, [sceneId]);
 
-  const lines = sceneId ? getLinesForScene(sceneId) : [];
+  const allLines = useSceneStore((s) => s.lines);
+  const lines = useMemo(
+    () => sceneId ? getLinesForScene(sceneId) : [],
+    [sceneId, allLines]
+  );
   const currentLine = lines[currentLineIndex] as Line | undefined;
 
   // Start/stop listening based on rehearsal state
@@ -172,7 +183,7 @@ export default function RehearsalScreen() {
 
     setState('loading');
     try {
-      // Ensure audio session is in playback mode
+      // Ensure audio session is in playback mode (needed after speech recognition changes it)
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
       const player = createLineSpeaker(line.text, line.character_name ?? 'DEFAULT');
       currentPlayer.current = player;
@@ -356,7 +367,7 @@ export default function RehearsalScreen() {
             )}
             {!isListening && isSpeechAvailable && speechError && (
               <View style={styles.micRow}>
-                <Text style={styles.micErrorText}>{speechError}</Text>
+                <Text style={styles.micErrorText}>{TRANSCRIPTION_ERROR_MESSAGES[speechError]}</Text>
               </View>
             )}
             <View style={styles.footerRow}>

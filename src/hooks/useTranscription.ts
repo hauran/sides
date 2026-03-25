@@ -9,24 +9,29 @@ try {
   // Native module not available
 }
 
+export type TranscriptionError = 'mic-unavailable' | 'not-available' | 'permission-denied' | 'unknown';
+
 export interface UseTranscriptionResult {
   transcript: string;
   isListening: boolean;
   isAvailable: boolean;
   start: () => Promise<void>;
   stop: () => void;
-  error: string | null;
+  error: TranscriptionError | null;
 }
+
+const MAX_SILENT_RESTARTS = 10;
 
 export function useTranscription(): UseTranscriptionResult {
   const [transcript, setTranscript] = useState('');
   const [isListening, setIsListening] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<TranscriptionError | null>(null);
   const isAvailable = ExpoSpeechRecognitionModule != null;
 
   const wantListeningRef = useRef(false);
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isStartingRef = useRef(false);
+  const silentRestartCountRef = useRef(0);
 
   const doStart = useCallback(() => {
     if (!ExpoSpeechRecognitionModule || isStartingRef.current) return;
@@ -37,9 +42,8 @@ export function useTranscription(): UseTranscriptionResult {
         interimResults: true,
         continuous: true,
       });
-    } catch (err) {
-      console.warn('[Speech] start failed:', err);
-      setError('Mic unavailable — tap "Done" to advance');
+    } catch {
+      setError('mic-unavailable');
       isStartingRef.current = false;
       wantListeningRef.current = false;
     }
@@ -51,6 +55,8 @@ export function useTranscription(): UseTranscriptionResult {
     const resultListener = ExpoSpeechRecognitionModule.addListener('result', (event: { results: Array<{ transcript: string }> }) => {
       const text = event.results[0]?.transcript ?? '';
       setTranscript(text);
+      // Got real speech — reset silent restart counter
+      silentRestartCountRef.current = 0;
     });
 
     const startListener = ExpoSpeechRecognitionModule.addListener('start', () => {
@@ -68,7 +74,8 @@ export function useTranscription(): UseTranscriptionResult {
         restartTimerRef.current = null;
       }
 
-      if (wantListeningRef.current) {
+      if (wantListeningRef.current && silentRestartCountRef.current < MAX_SILENT_RESTARTS) {
+        silentRestartCountRef.current++;
         restartTimerRef.current = setTimeout(() => {
           restartTimerRef.current = null;
           if (wantListeningRef.current) {
@@ -81,11 +88,11 @@ export function useTranscription(): UseTranscriptionResult {
     const errorListener = ExpoSpeechRecognitionModule.addListener('error', (event: { error: string; message: string }) => {
       if (event.error === 'no-speech') return;
       if (event.message?.includes('avfaudio') || event.message?.includes('560227702')) {
-        setError('Mic unavailable — tap "Done" to advance');
+        setError('mic-unavailable');
         wantListeningRef.current = false;
         return;
       }
-      setError(event.message || event.error);
+      setError('unknown');
     });
 
     return () => {
@@ -99,25 +106,25 @@ export function useTranscription(): UseTranscriptionResult {
 
   const start = useCallback(async () => {
     if (!ExpoSpeechRecognitionModule) {
-      setError('Speech recognition is not available. Use a development build.');
+      setError('not-available');
       return;
     }
 
     wantListeningRef.current = true;
+    silentRestartCountRef.current = 0;
     setTranscript('');
     setError(null);
 
     try {
       const permResult = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!permResult.granted) {
-        setError('Microphone or speech recognition permission denied.');
+        setError('permission-denied');
         wantListeningRef.current = false;
         return;
       }
       doStart();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to start speech recognition';
-      setError(msg);
+    } catch {
+      setError('unknown');
       wantListeningRef.current = false;
     }
   }, [doStart]);
