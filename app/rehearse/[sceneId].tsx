@@ -52,6 +52,7 @@ export default function RehearsalScreen() {
 
   const [state, setState] = useState<RehearsalState>('idle');
   const [mode, setMode] = useState<RehearsalMode>('learning');
+  const [characters, setCharacters] = useState<{ id: string; name: string }[]>([]);
   const [currentLineIndex, setCurrentLineIndex] = useState(0);
   const [linesLoaded, setLinesLoaded] = useState(false);
   const [hintLevel, setHintLevel] = useState(0); // 0 = hidden, 1+ = words revealed
@@ -79,7 +80,13 @@ export default function RehearsalScreen() {
       // Fetch scene metadata + lines
       Promise.all([
         api<{ id: string; name: string; play_id: string; sort: number }>(`/scenes/${sceneId}`)
-          .then((s) => useSceneStore.getState().setScene(s)),
+          .then((s) => {
+            useSceneStore.getState().setScene(s);
+            // Fetch characters for the play
+            api<{ id: string; name: string }[]>(`/plays/${s.play_id}/characters`)
+              .then(setCharacters)
+              .catch(console.error);
+          }),
         fetchLines(sceneId),
       ]).then(() => setLinesLoaded(true));
     }
@@ -311,7 +318,8 @@ export default function RehearsalScreen() {
   }
 
   function isMyLine(line: Line): boolean {
-    return line.character_id != null && myCharacterIds.has(line.character_id);
+    const ids = line.character_ids?.length ? line.character_ids : (line.character_id ? [line.character_id] : []);
+    return ids.some(id => myCharacterIds.has(id));
   }
 
   function activateLine(index: number) {
@@ -390,25 +398,27 @@ export default function RehearsalScreen() {
     setEditingLine(line);
   }
 
-  async function handleSaveLineEdit(lineId: string, newText: string) {
+  async function handleSaveLineEdit(lineId: string, updates: { text?: string; character_ids?: string[] }) {
     const line = editingLine;
-    // Persist to server
     await api<Line>(`/lines/${lineId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ text: newText }),
+      body: JSON.stringify(updates),
     });
-    // Update local store
-    useSceneStore.getState().updateLine(lineId, { text: newText, edited: true });
-    // Invalidate TTS cache for the old text
-    if (line?.character_name) {
+    const storeUpdates: Partial<Line> = { edited: true };
+    if (updates.text) storeUpdates.text = updates.text;
+    if (updates.character_ids) {
+      storeUpdates.character_ids = updates.character_ids;
+      storeUpdates.character_id = updates.character_ids[0] ?? null;
+      const names = updates.character_ids.map(id => characters.find(c => c.id === id)?.name).filter(Boolean);
+      storeUpdates.character_name = names.length > 0 ? names.join(' / ') : null;
+    }
+    useSceneStore.getState().updateLine(lineId, storeUpdates);
+    if (updates.text && line?.character_name) {
       try {
         await api(`/tts/cache?character=${encodeURIComponent(line.character_name)}&text=${encodeURIComponent(line.text)}`, {
           method: 'DELETE',
         });
-      } catch (err) {
-        // Non-critical — log and continue
-        console.warn('TTS cache invalidation failed:', err);
-      }
+      } catch { /* Non-critical */ }
     }
   }
 
@@ -555,7 +565,7 @@ export default function RehearsalScreen() {
             <Animated.View
               style={getLineStyle(line, index)}
             >
-              {line.character_id ? (
+              {(line.character_ids?.length > 0 || line.character_id) ? (
                 <>
                   <View style={styles.characterRow}>
                     <Text
@@ -689,6 +699,7 @@ export default function RehearsalScreen() {
       {editingLine && (
         <LineEditor
           line={editingLine}
+          characters={characters}
           visible={!!editingLine}
           onClose={() => setEditingLine(null)}
           onSave={handleSaveLineEdit}

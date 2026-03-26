@@ -92,6 +92,13 @@ export function PlayEditor({ play, coverUrl, onClose, onSaved }: PlayEditorProps
         if (res.ok) {
           const data = await res.json();
           updates.cover_uri = data.cover_uri;
+        } else {
+          const errData = await res.json().catch(() => null);
+          const msg = errData?.error ?? 'Failed to upload image';
+          Alert.alert('Upload Failed', msg);
+          setUploading(false);
+          setSaving(false);
+          return;
         }
         setUploading(false);
       }

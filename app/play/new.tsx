@@ -38,10 +38,13 @@ export default function NewPlayScreen() {
     uri: string;
     name: string;
     mimeType: string;
+    size: number;
   } | null>(null);
   const [uploading, setUploading] = useState(false);
 
-  const canSubmit = selectedFile !== null && !uploading;
+  const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+  const fileTooLarge = selectedFile != null && selectedFile.size > MAX_FILE_SIZE;
+  const canSubmit = selectedFile !== null && !fileTooLarge && !uploading;
 
   async function handlePickPDF() {
     try {
@@ -57,6 +60,7 @@ export default function NewPlayScreen() {
         uri: asset.uri,
         name: asset.name,
         mimeType: asset.mimeType ?? 'application/pdf',
+        size: asset.size ?? 0,
       });
     } catch (err) {
       console.error('Document picker error:', err);
@@ -144,11 +148,12 @@ export default function NewPlayScreen() {
             <Text style={styles.dropZoneDesc}>
               Tap to select a script from your files
             </Text>
+            <Text style={styles.dropZoneLimit}>PDF up to 50 MB</Text>
           </Pressable>
 
           {/* Selected file pill */}
           {selectedFile && (
-            <View style={styles.filePill}>
+            <View style={[styles.filePill, fileTooLarge && styles.filePillError]}>
               <Text style={styles.filePillIcon}>{'\uD83D\uDCCE'}</Text>
               <Text style={styles.filePillName} numberOfLines={1}>
                 {selectedFile.name}
@@ -184,6 +189,11 @@ export default function NewPlayScreen() {
 
         {/* Pinned CTA at bottom */}
         <View style={styles.bottomBar}>
+          {fileTooLarge && (
+            <Text style={styles.fileTooLargeText}>
+              File is too large. Please select a PDF under 50 MB.
+            </Text>
+          )}
           <Pressable
             style={[styles.createButton, !canSubmit && styles.createButtonDisabled]}
             onPress={handleUpload}
@@ -280,6 +290,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.textSecondary,
   },
+  dropZoneLimit: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    marginTop: spacing.sm,
+    opacity: 0.6,
+  },
   filePill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -311,6 +327,9 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: colors.textInverse,
+  },
+  filePillError: {
+    backgroundColor: colors.coralSoft,
   },
   photoCard: {
     backgroundColor: colors.surface,
@@ -366,5 +385,11 @@ const styles = StyleSheet.create({
   },
   createButtonTextDisabled: {
     opacity: 0.7,
+  },
+  fileTooLargeText: {
+    fontSize: 13,
+    color: colors.coral,
+    textAlign: 'center',
+    marginBottom: spacing.sm,
   },
 });

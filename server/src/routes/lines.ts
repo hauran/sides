@@ -11,16 +11,30 @@ router.get("/scenes/:sceneId/lines", authMiddleware, async (req: Request, res: R
 
     const { data: lines, error } = await supabase
       .from("lines")
-      .select("id, scene_id, character_id, text, type, sort, edited, characters(name)")
+      .select("id, scene_id, character_id, character_ids, text, type, sort, edited, characters(name)")
       .eq("scene_id", sceneId)
       .order("sort");
     if (error) throw error;
 
-    const result = (lines ?? []).map((l) => ({
-      ...l,
-      character_name: (l.characters as any)?.name ?? null,
-      characters: undefined,
-    }));
+    // Fetch all characters for this scene's play to resolve names
+    const sceneRes = await supabase.from("scenes").select("play_id").eq("id", sceneId).single();
+    const playId = sceneRes.data?.play_id;
+    let charMap = new Map<string, string>();
+    if (playId) {
+      const { data: chars } = await supabase.from("characters").select("id, name").eq("play_id", playId);
+      charMap = new Map((chars ?? []).map(c => [c.id, c.name]));
+    }
+
+    const result = (lines ?? []).map((l) => {
+      const ids: string[] = l.character_ids?.length > 0 ? l.character_ids : (l.character_id ? [l.character_id] : []);
+      const names = ids.map(id => charMap.get(id)).filter(Boolean);
+      return {
+        ...l,
+        character_ids: ids,
+        character_name: names.length > 0 ? names.join(" / ") : null,
+        characters: undefined,
+      };
+    });
 
     res.json(result);
   } catch (err) {
@@ -29,22 +43,30 @@ router.get("/scenes/:sceneId/lines", authMiddleware, async (req: Request, res: R
   }
 });
 
-// PATCH /api/lines/:id — update line text
+// PATCH /api/lines/:id — update line text and/or character assignment
 router.patch("/lines/:id", authMiddleware, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { text } = req.body;
+    const { text, character_ids } = req.body;
 
-    if (!text || typeof text !== "string") {
-      res.status(400).json({ error: "text is required and must be a string" });
+    const updates: Record<string, unknown> = { edited: true };
+    if (text && typeof text === "string") updates.text = text;
+    if (character_ids !== undefined) {
+      const ids = Array.isArray(character_ids) ? character_ids : [];
+      updates.character_ids = ids;
+      updates.character_id = ids[0] ?? null; // keep primary in sync
+    }
+
+    if (Object.keys(updates).length <= 1) {
+      res.status(400).json({ error: "text or character_ids is required" });
       return;
     }
 
     const { data, error } = await supabase
       .from("lines")
-      .update({ text, edited: true })
+      .update(updates)
       .eq("id", id)
-      .select("id, scene_id, character_id, text, type, sort, edited")
+      .select("id, scene_id, character_id, character_ids, text, type, sort, edited")
       .single();
 
     if (error) {

@@ -118,7 +118,26 @@
 
 ---
 
-## Milestone 10: Polish & Ship
+## Milestone 10: Robust Script Upload & Parsing
+
+- Chunked image parsing: break scanned PDFs into batches (20-30 pages), parse each batch separately, merge results
+- PDF compression pipeline: mupdf garbage collection + stream compression before sending to Claude
+- Large PDF progress: show page-level progress during parsing ("Reading pages 41-60 of 201...")
+- Scanned PDF support: detect image-only PDFs, render pages as images, send to Claude vision in batches
+- Text extraction fallback: when PDF is too large and compression isn't enough, extract text with mupdf
+- Claude API size limits: 25MB for PDF documents, ~100 images per request — handle gracefully
+- Upload retry with exponential backoff: connection drops on long parses (seen at ~500 streaming chunks)
+- Error messages: surface specific errors to user ("PDF too large", "Scanned PDF not supported yet") instead of generic "Internal error"
+- File type validation: reject non-PDF files client-side before upload
+- Musical support: preserve sheet music notation context when parsing (requires image-based approach, not text extraction)
+- Multi-act merging: when parsing in batches, correctly merge characters and maintain scene continuity across chunks
+- Duplicate character deduplication: handle slight name variations across batches ("ROMEO" vs "Romeo")
+
+**Done when:** Any reasonable script PDF (up to 50MB, scanned or digital, play or musical) uploads and parses correctly with clear progress and error feedback.
+
+---
+
+## Milestone 11: Polish & Ship
 
 - Design language applied: purple/amber palette, serif for script lines, sans-serif for UI chrome
 - Avatar component: user photo or initials fallback

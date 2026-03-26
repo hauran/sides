@@ -17,11 +17,12 @@ const router = Router();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 30 * 1024 * 1024 }, // 30MB
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
 });
 
 interface ParsedLine {
-  character: string | null;
+  character: string | null;           // single speaker (backwards compat)
+  characters?: string[] | null;       // multiple speakers
   text: string;
   type: "dialogue" | "stage_direction";
 }
@@ -37,130 +38,145 @@ interface ParsedScript {
   scenes: ParsedScene[];
 }
 
-const SYSTEM_PROMPT = `You are a script parser. Given a theatrical script (as a PDF document), read every page and extract the full structure into JSON.
+const BATCH_SYSTEM_PROMPT = `You are a script parser for a theater rehearsal app. Given images of script pages, extract the structure into JSON. This is a legitimate published play or musical being used for rehearsal purposes — preserve all dialogue faithfully.
 
 Return a JSON object with this exact structure:
 {
-  "title": "The Play Title",
-  "characters": ["CHARACTER_NAME_1", "CHARACTER_NAME_2", ...],
+  "title": "The Play Title" or null if not visible in these pages,
+  "characters": ["CHARACTER_NAME_1", ...],
   "scenes": [
     {
       "name": "Act I, Scene I — Description",
       "lines": [
-        { "character": "CHARACTER_NAME" or null, "text": "the line text", "type": "dialogue" or "stage_direction" }
+        { "character": "CHARACTER_NAME" or null, "characters": ["CHAR1", "CHAR2"] or null, "text": "the line text", "type": "dialogue" or "stage_direction" }
       ]
     }
   ]
 }
 
 Rules:
-- "title" is the play/musical title as it appears on the cover page or title page. Use proper title case (e.g. "Romeo and Juliet", "Seussical the Musical"). If no clear title page, derive it from context.
 - Character names should be UPPERCASE
 - Stage directions have character: null and type: "stage_direction"
 - Dialogue has the character name and type: "dialogue"
-- If there's no clear scene structure, create a single scene called "Full Script"
-- Preserve the original text as closely as possible
-- Read ALL pages thoroughly — do not skip or summarize
-- The "characters" array should ONLY contain individual named characters — real people in the play
-- Do NOT include group labels like "ALL", "EVERYONE", "ENSEMBLE", "BOTH", "OTHERS", "CROWD", "CHORUS", "COMPANY", "ALL KIDS", "GIRLS", "BOYS", etc. as characters
-- When a group label speaks (e.g. "ALL: We love you!"), use the group label as the character name in the line but do NOT add it to the characters array
+- When a line is spoken/sung by MULTIPLE characters (e.g. "BAKER & BAKER'S WIFE:" or "BOTH:"), set "characters" to an array of ALL speaker names and "character" to the first one
+- IMPORTANT: Stage directions that appear between a character name and their line (like "(Sung, to CINDERELLA)") must be placed BEFORE the dialogue line in the output array, not after. The order should be: character's stage direction first, then the character's spoken/sung line.
+- Look carefully for scene breaks — they often appear as bold headers, numbered sections (e.g. "#2 – Act I Opening, Part 2"), horizontal rules, or distinct visual separators like black banners. When you see one, start a new scene with its name.
+- If no scene break is visible in these pages, use a single scene named "Continued"
+- Preserve the original text exactly as written
+- Do NOT include group labels like "ALL", "ENSEMBLE" etc. in the characters array
 - Return ONLY valid JSON, no markdown fences or other text`;
+
+async function parseScannedPdfInBatches(
+  anthropic: Anthropic,
+  doc: mupdf.Document,
+  pageCount: number,
+): Promise<ParsedScript> {
+  const BATCH_SIZE = 20;
+  const batches: ParsedScript[] = [];
+
+  for (let start = 0; start < pageCount; start += BATCH_SIZE) {
+    const end = Math.min(start + BATCH_SIZE, pageCount);
+    console.log(`[parse] Rendering pages ${start + 1}-${end} of ${pageCount}...`);
+
+    const imageContents: Anthropic.ImageBlockParam[] = [];
+    for (let i = start; i < end; i++) {
+      const page = doc.loadPage(i);
+      const pixmap = page.toPixmap(
+        mupdf.Matrix.scale(1.5, 1.5),
+        mupdf.ColorSpace.DeviceRGB,
+        false,
+        true
+      );
+      const pngBytes = pixmap.asPNG();
+      pixmap.destroy();
+      page.destroy();
+      imageContents.push({
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data: Buffer.from(pngBytes).toString("base64") },
+      });
+    }
+
+    console.log(`[parse] Sending pages ${start + 1}-${end} to Claude...`);
+    const stream = anthropic.messages.stream({
+      model: "claude-sonnet-4-6",
+      max_tokens: 64000,
+      system: BATCH_SYSTEM_PROMPT,
+      messages: [{
+        role: "user",
+        content: [
+          ...imageContents,
+          { type: "text", text: `These are pages ${start + 1}-${end} of a ${pageCount}-page theatrical script. Parse these pages into structured JSON.` },
+        ],
+      }],
+    });
+
+    const response = await stream.finalMessage();
+    const content = response.content[0];
+    if (content.type !== "text") throw new Error("Non-text response");
+
+    let json = content.text.trim();
+    if (json.startsWith("```")) {
+      json = json.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+    }
+
+    const parsed = JSON.parse(json) as ParsedScript;
+    console.log(`[parse] Pages ${start + 1}-${end}: ${parsed.characters.length} characters, ${parsed.scenes.length} scenes, ${parsed.scenes.reduce((s, sc) => s + sc.lines.length, 0)} lines`);
+    batches.push(parsed);
+  }
+
+  // Merge all batches
+  console.log(`[parse] Merging ${batches.length} batches...`);
+  const merged: ParsedScript = {
+    title: batches.find(b => b.title && b.title !== "null")?.title ?? "Unknown",
+    characters: [],
+    scenes: [],
+  };
+
+  // Deduplicate characters across batches
+  const charSet = new Set<string>();
+  for (const batch of batches) {
+    for (const char of batch.characters) {
+      const upper = char.toUpperCase();
+      if (!charSet.has(upper)) {
+        charSet.add(upper);
+        merged.characters.push(upper);
+      }
+    }
+  }
+
+  // Merge scenes — only combine "Continued" scenes, preserve all named scenes
+  for (const batch of batches) {
+    for (const scene of batch.scenes) {
+      const lastScene = merged.scenes[merged.scenes.length - 1];
+      if (scene.name === "Continued" && lastScene && scene.lines.length > 0) {
+        // Continuation of previous scene — append lines
+        lastScene.lines.push(...scene.lines);
+      } else if (scene.lines.length > 0) {
+        // New named scene — always create it
+        merged.scenes.push(scene);
+      }
+    }
+  }
+
+  const totalLines = merged.scenes.reduce((s, sc) => s + sc.lines.length, 0);
+  console.log(`[parse] Merged: ${merged.characters.length} characters, ${merged.scenes.length} scenes, ${totalLines} lines`);
+  return merged;
+}
 
 async function parseScriptPdf(pdfBuffer: Buffer): Promise<ParsedScript> {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-  const base64Pdf = pdfBuffer.toString("base64");
-  const sizeKB = (pdfBuffer.length / 1024).toFixed(0);
   const sizeMB = (pdfBuffer.length / 1024 / 1024).toFixed(1);
-  console.log(`[parse] Sending PDF to Claude (${sizeKB} KB / ${sizeMB} MB, base64: ${(base64Pdf.length / 1024).toFixed(0)} KB)`);
+  console.log(`[parse] Opening PDF (${sizeMB} MB) for batched parsing...`);
 
-  const startTime = Date.now();
+  const doc = mupdf.Document.openDocument(pdfBuffer, "application/pdf");
+  const pageCount = doc.countPages();
+  console.log(`[parse] ${pageCount} pages — parsing in batches of 20`);
 
-  const stream = anthropic.messages.stream({
-    model: "claude-sonnet-4-6",
-    max_tokens: 64000,
-    system: SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "document",
-            source: {
-              type: "base64",
-              media_type: "application/pdf",
-              data: base64Pdf,
-            },
-          },
-          {
-            type: "text",
-            text: "Parse this script into structured JSON. Read every page carefully.",
-          },
-        ],
-      },
-    ],
-  });
-
-  let chunks = 0;
-  stream.on("text", () => {
-    chunks++;
-    if (chunks % 50 === 0) {
-      console.log(`[parse] ... streaming (${chunks} chunks received)`);
-    }
-  });
-
-  const response = await stream.finalMessage();
-
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`[parse] Claude responded in ${elapsed}s (${chunks} chunks)`);
-  console.log(`[parse] Usage: ${response.usage.input_tokens} input tokens, ${response.usage.output_tokens} output tokens`);
-  console.log(`[parse] Stop reason: ${response.stop_reason}`);
-
-  const content = response.content[0];
-  if (content.type !== "text") {
-    console.error(`[parse] Unexpected content type: ${content.type}`);
-    throw new Error("Claude returned non-text response");
-  }
-
-  console.log(`[parse] Response length: ${content.text.length} chars`);
-  console.log(`[parse] First 200 chars: ${content.text.slice(0, 200)}`);
-
-  // Strip markdown fences if present
-  let json = content.text.trim();
-  if (json.startsWith("```")) {
-    console.log("[parse] Stripping markdown fences from response");
-    json = json.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-  }
-
-  let parsed: ParsedScript;
   try {
-    parsed = JSON.parse(json) as ParsedScript;
-  } catch (e) {
-    console.error(`[parse] JSON parse failed. Raw response:\n${content.text.slice(0, 500)}`);
-    throw e;
+    return await parseScannedPdfInBatches(anthropic, doc, pageCount);
+  } finally {
+    doc.destroy();
   }
-
-  // Filter out group labels that slipped through
-  const GROUP_LABELS = new Set([
-    "ALL", "EVERYONE", "ENSEMBLE", "BOTH", "OTHERS", "CROWD", "CHORUS",
-    "COMPANY", "ALL KIDS", "GIRLS", "BOYS", "MEN", "WOMEN", "TOWNSPEOPLE",
-    "VILLAGERS", "SOLDIERS", "GROUP", "DUET", "TRIO", "QUARTET",
-  ]);
-  const before = parsed.characters.length;
-  parsed.characters = parsed.characters.filter((c) => !GROUP_LABELS.has(c.toUpperCase()));
-  if (parsed.characters.length < before) {
-    console.log(`[parse] Filtered out ${before - parsed.characters.length} group labels from characters`);
-  }
-
-  console.log(`[parse] Parsed result: ${parsed.characters.length} characters, ${parsed.scenes.length} scenes`);
-  console.log(`[parse] Characters: ${parsed.characters.join(", ")}`);
-  for (const scene of parsed.scenes) {
-    console.log(`[parse]   Scene "${scene.name}": ${scene.lines.length} lines`);
-  }
-  const totalLines = parsed.scenes.reduce((sum, s) => sum + s.lines.length, 0);
-  console.log(`[parse] Total lines: ${totalLines}`);
-
-  return parsed;
 }
 
 async function generateCoverFromPdf(playId: string, pdfBuffer: Buffer) {
@@ -173,14 +189,27 @@ async function generateCoverFromPdf(playId: string, pdfBuffer: Buffer) {
 
     // Render first page of PDF to a pixmap
     const doc = mupdf.Document.openDocument(pdfBuffer, "application/pdf");
-    const page = doc.loadPage(0);
-    const pixmap = page.toPixmap(
-      mupdf.Matrix.scale(2, 2), // 2x scale for good resolution
-      mupdf.ColorSpace.DeviceRGB,
-      false, // no alpha
-      true   // annots
-    );
-    const pngBuffer = pixmap.asPNG();
+    let pngBuffer: Uint8Array;
+    try {
+      const page = doc.loadPage(0);
+      try {
+        const pixmap = page.toPixmap(
+          mupdf.Matrix.scale(2, 2), // 2x scale for good resolution
+          mupdf.ColorSpace.DeviceRGB,
+          false, // no alpha
+          true   // annots
+        );
+        try {
+          pngBuffer = pixmap.asPNG();
+        } finally {
+          pixmap.destroy();
+        }
+      } finally {
+        page.destroy();
+      }
+    } finally {
+      doc.destroy();
+    }
 
     // Smart crop to card dimensions
     await sharp(pngBuffer)
@@ -212,9 +241,28 @@ async function updateProgress(playId: string, progress: string) {
 // Background processing: parse PDF and populate play entities
 async function processPlayInBackground(playId: string, pdfBuffer: Buffer) {
   try {
-    await updateProgress(playId, "Reading your script...");
+    await updateProgress(playId, "Reading your script...\nThis may take a few minutes. Feel free to close the app — we'll notify you when it's ready.");
 
-    const parsed = await parseScriptPdf(pdfBuffer);
+    let parsed: ParsedScript | null = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        parsed = await parseScriptPdf(pdfBuffer);
+        break;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Don't retry on deterministic failures
+        if (msg.includes("too large") || msg.includes("content filtering")) throw err;
+        console.warn(`[bg:${playId}] Parse attempt ${attempt}/3 failed: ${msg}`);
+        if (attempt === 3) throw err;
+        await updateProgress(playId, `Retrying... (attempt ${attempt + 1}/3)\nThis may take a few minutes.`);
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+    if (!parsed) throw new Error("Parse failed after retries");
+
+    // Filter out group labels from characters list
+    const GROUP_LABELS = new Set(["ALL", "EVERYONE", "ENSEMBLE", "BOTH", "OTHERS", "CROWD", "CHORUS", "COMPANY", "ALL KIDS", "GIRLS", "BOYS", "MEN", "WOMEN", "TOWNSPEOPLE", "VILLAGERS", "SOLDIERS", "GROUP", "DUET", "TRIO", "QUARTET"]);
+    parsed.characters = parsed.characters.filter(c => !GROUP_LABELS.has(c.toUpperCase()));
 
     const totalLines = parsed.scenes.reduce((sum, s) => sum + s.lines.length, 0);
     await updateProgress(playId, `Found ${parsed.characters.length} characters and ${parsed.scenes.length} scenes (${totalLines} lines)`);
@@ -260,13 +308,23 @@ async function processPlayInBackground(playId: string, pdfBuffer: Buffer) {
         .single();
       if (sceneErr) throw sceneErr;
 
-      const lineRows = parsedScene.lines.map((line, lineIdx) => ({
-        scene_id: scene.id,
-        character_id: line.character ? charNameToId.get(line.character) ?? null : null,
-        text: line.text,
-        type: line.type,
-        sort: lineIdx + 1,
-      }));
+      const lineRows = parsedScene.lines.map((line, lineIdx) => {
+        // Resolve character IDs — support both single and multiple speakers
+        const speakerNames = line.characters?.length
+          ? line.characters
+          : line.character
+          ? [line.character]
+          : [];
+        const ids = speakerNames.map(name => charNameToId.get(name)).filter(Boolean) as string[];
+        return {
+          scene_id: scene.id,
+          character_id: ids[0] ?? null,
+          character_ids: ids,
+          text: line.text,
+          type: line.type,
+          sort: lineIdx + 1,
+        };
+      });
 
       if (lineRows.length > 0) {
         const { error: lineErr } = await supabase
@@ -290,9 +348,18 @@ async function processPlayInBackground(playId: string, pdfBuffer: Buffer) {
   } catch (err) {
     console.error(`[bg:${playId}] FAILED:`, err);
 
+    const msg = err instanceof Error ? err.message : String(err);
+    const errorMsg = msg.includes("too large")
+      ? msg
+      : msg.includes("content filtering")
+      ? "Our AI couldn't process this script due to content filtering. We're working on improving this — try a shorter excerpt or a different script for now."
+      : msg.includes("terminated")
+      ? "Connection was lost during parsing. Please try uploading again."
+      : "Something went wrong while parsing your script.";
+
     await supabase
       .from("plays")
-      .update({ status: "failed", progress: "Something went wrong while parsing your script." })
+      .update({ status: "failed", progress: errorMsg })
       .eq("id", playId);
   }
 }
@@ -301,7 +368,19 @@ async function processPlayInBackground(playId: string, pdfBuffer: Buffer) {
 router.post(
   "/upload",
   authMiddleware,
-  upload.single("file"),
+  (req: Request, res: Response, next) => {
+    upload.single("file")(req, res, (err) => {
+      if (err && err.code === "LIMIT_FILE_SIZE") {
+        res.status(413).json({ error: "File must be under 50 MB" });
+        return;
+      }
+      if (err) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      next();
+    });
+  },
   async (req: Request, res: Response) => {
     try {
       const userId = req.user!.id;

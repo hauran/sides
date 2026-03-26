@@ -51,8 +51,9 @@ export interface Scene {
 export interface Line {
   id: string;
   scene_id: string;
-  character_id: string | null;
-  character_name?: string | null;
+  character_id: string | null;       // primary speaker (backwards compat)
+  character_ids: string[];            // all speakers
+  character_name?: string | null;     // display name(s), joined with " / "
   text: string;
   type: 'dialogue' | 'stage_direction';
   sort: number;

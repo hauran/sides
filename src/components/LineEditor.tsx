@@ -8,37 +8,76 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
 } from 'react-native';
-import { colors, radii, shadows } from '../lib/theme';
+import { colors, spacing, radii, shadows } from '../lib/theme';
 import type { Line } from '../types';
+
+interface Character {
+  id: string;
+  name: string;
+}
 
 export interface LineEditorProps {
   line: Line;
+  characters: Character[];
   visible: boolean;
   onClose: () => void;
-  onSave: (lineId: string, newText: string) => Promise<void>;
+  onSave: (lineId: string, updates: { text?: string; character_ids?: string[] }) => Promise<void>;
 }
 
-export function LineEditor({ line, visible, onClose, onSave }: LineEditorProps) {
+export function LineEditor({ line, characters, visible, onClose, onSave }: LineEditorProps) {
   const [text, setText] = useState(line.text);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => {
+    return new Set(line.character_ids ?? (line.character_id ? [line.character_id] : []));
+  });
   const [saving, setSaving] = useState(false);
 
-  // Reset text when a new line is opened
+  // Reset when a new line is opened
   const [prevLineId, setPrevLineId] = useState(line.id);
   if (line.id !== prevLineId) {
     setPrevLineId(line.id);
     setText(line.text);
+    setSelectedIds(new Set(line.character_ids ?? (line.character_id ? [line.character_id] : [])));
   }
+
+  function toggleCharacter(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  const selectedNames = characters.filter(c => selectedIds.has(c.id)).map(c => c.name);
+  const hasTextChange = text.trim() !== line.text;
+  const originalIds = new Set(line.character_ids ?? (line.character_id ? [line.character_id] : []));
+  const hasCharChange = selectedIds.size !== originalIds.size || ![...selectedIds].every(id => originalIds.has(id));
+  const hasChanges = hasTextChange || hasCharChange;
 
   async function handleSave() {
     const trimmed = text.trim();
-    if (!trimmed || trimmed === line.text) {
+    if (!trimmed) {
       onClose();
       return;
     }
+    if (!hasChanges) {
+      onClose();
+      return;
+    }
+
     setSaving(true);
     try {
-      await onSave(line.id, trimmed);
+      const updates: { text?: string; character_ids?: string[] } = {};
+      if (hasTextChange) updates.text = trimmed;
+      if (hasCharChange) {
+        updates.character_ids = [...selectedIds];
+      }
+      await onSave(line.id, updates);
       onClose();
     } catch (err) {
       console.error('Failed to save line:', err);
@@ -59,10 +98,9 @@ export function LineEditor({ line, visible, onClose, onSave }: LineEditorProps) 
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View style={styles.sheet}>
+          {/* Header */}
           <View style={styles.header}>
-            <Text style={styles.characterName}>
-              {line.character_name ?? 'UNKNOWN'}
-            </Text>
+            <Text style={styles.headerTitle}>Edit Line</Text>
             {line.edited && (
               <View style={styles.editedBadge}>
                 <Text style={styles.editedBadgeText}>edited</Text>
@@ -70,6 +108,35 @@ export function LineEditor({ line, visible, onClose, onSave }: LineEditorProps) 
             )}
           </View>
 
+          {/* Speaker selector */}
+          <Text style={styles.sectionLabel}>SPEAKER</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.chipRow}
+          >
+            <Pressable
+              style={[styles.chip, selectedIds.size === 0 && styles.chipSelected]}
+              onPress={() => setSelectedIds(new Set())}
+            >
+              <Text style={[styles.chipText, selectedIds.size === 0 && styles.chipTextSelected]}>
+                None
+              </Text>
+            </Pressable>
+            {characters.map(c => (
+              <Pressable
+                key={c.id}
+                style={[styles.chip, selectedIds.has(c.id) && styles.chipSelected]}
+                onPress={() => toggleCharacter(c.id)}
+              >
+                <Text style={[styles.chipText, selectedIds.has(c.id) && styles.chipTextSelected]}>
+                  {c.name}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+
+          {/* Text input */}
           <TextInput
             style={styles.textInput}
             value={text}
@@ -78,8 +145,11 @@ export function LineEditor({ line, visible, onClose, onSave }: LineEditorProps) 
             autoFocus
             textAlignVertical="top"
             editable={!saving}
+            placeholder="Line text..."
+            placeholderTextColor={colors.textSecondary}
           />
 
+          {/* Buttons */}
           <View style={styles.buttonRow}>
             <Pressable
               style={styles.cancelButton}
@@ -89,9 +159,9 @@ export function LineEditor({ line, visible, onClose, onSave }: LineEditorProps) 
               <Text style={styles.cancelButtonText}>Cancel</Text>
             </Pressable>
             <Pressable
-              style={[styles.saveButton, saving && styles.saveButtonDisabled]}
+              style={[styles.saveButton, (!hasChanges || saving) && styles.saveButtonDisabled]}
               onPress={handleSave}
-              disabled={saving}
+              disabled={!hasChanges || saving}
             >
               <Text style={styles.saveButtonText}>
                 {saving ? 'Saving...' : 'Save'}
@@ -116,7 +186,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     padding: 24,
     paddingBottom: 40,
-    gap: 20,
+    gap: 16,
     ...shadows.lg,
   },
   header: {
@@ -124,12 +194,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
   },
-  characterName: {
-    fontSize: 13,
+  headerTitle: {
+    fontSize: 17,
     fontWeight: '700',
-    color: colors.rose,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
+    color: colors.text,
   },
   editedBadge: {
     backgroundColor: colors.roseSoft,
@@ -142,6 +210,36 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.rose,
     textTransform: 'uppercase',
+  },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    letterSpacing: 1,
+  },
+  chipRow: {
+    gap: spacing.sm,
+    paddingVertical: 2,
+  },
+  chip: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radii.full,
+    backgroundColor: colors.surfaceAlt,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+  },
+  chipSelected: {
+    backgroundColor: colors.roseSoft,
+    borderColor: colors.rose,
+  },
+  chipText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  chipTextSelected: {
+    color: colors.rose,
   },
   textInput: {
     backgroundColor: colors.surfaceAlt,
@@ -180,7 +278,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.rose,
   },
   saveButtonDisabled: {
-    opacity: 0.6,
+    opacity: 0.4,
   },
   saveButtonText: {
     fontSize: 16,

@@ -108,7 +108,7 @@ export default function HomeScreen() {
   const readyPlays = playList.filter((p) => p.status === 'ready');
   const processingPlays = playList.filter((p) => p.status === 'processing');
   const failedPlays = playList.filter((p) => p.status === 'failed');
-  const orderedPlays = [...readyPlays, ...processingPlays, ...failedPlays];
+  const orderedPlays = [...processingPlays, ...readyPlays, ...failedPlays];
 
   // ---- Empty state ----
   const renderEmpty = () => (

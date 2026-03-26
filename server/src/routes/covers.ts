@@ -218,8 +218,20 @@ router.get("/:playId/image", (req: Request, res: Response) => {
 });
 
 // POST /api/covers/:playId/upload — upload a custom cover image
-const coverUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
-router.post("/:playId/upload", authMiddleware, coverUpload.single("image"), async (req: Request, res: Response) => {
+const coverUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+router.post("/:playId/upload", authMiddleware, (req: Request, res: Response, next) => {
+  coverUpload.single("image")(req, res, (err) => {
+    if (err && err.code === "LIMIT_FILE_SIZE") {
+      res.status(413).json({ error: "Image must be under 25 MB" });
+      return;
+    }
+    if (err) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    next();
+  });
+}, async (req: Request, res: Response) => {
   const { playId } = req.params;
   const file = req.file;
 
