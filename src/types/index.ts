@@ -58,6 +58,18 @@ export interface Line {
   type: 'dialogue' | 'stage_direction';
   sort: number;
   edited: boolean;
+  hidden: boolean;
+}
+
+export interface Bookmark {
+  id: string;
+  line_id: string;
+  user_id: string;
+  created_at: string;
+  line_text?: string;
+  scene_name?: string;
+  character_name?: string;
+  scene_id?: string;
 }
 
 export interface Recording {

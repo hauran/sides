@@ -211,9 +211,11 @@ async function generateCoverFromPdf(playId: string, pdfBuffer: Buffer) {
       doc.destroy();
     }
 
-    // Smart crop to card dimensions
+    // Save source for re-cropping, then smart crop to card dimensions
+    const srcPath = path.join(COVERS_DIR, `${playId}_src.jpg`);
+    await sharp(pngBuffer).jpeg({ quality: 90 }).toFile(srcPath);
     await sharp(pngBuffer)
-      .resize(800, 400, {
+      .resize(800, 450, {
         fit: "cover",
         position: sharp.strategy.attention,
       })
@@ -239,9 +241,9 @@ async function updateProgress(playId: string, progress: string) {
 }
 
 // Background processing: parse PDF and populate play entities
-async function processPlayInBackground(playId: string, pdfBuffer: Buffer) {
+async function processPlayInBackground(playId: string, pdfBuffer: Buffer, userTitle: string) {
   try {
-    await updateProgress(playId, "Reading your script...\nThis may take a few minutes. Feel free to close the app — we'll notify you when it's ready.");
+    await updateProgress(playId, "Reading your script...\nThis can take quite a long time depending on the length of your script. Feel free to close the app — we'll notify you when it's ready.");
 
     let parsed: ParsedScript | null = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -267,10 +269,35 @@ async function processPlayInBackground(playId: string, pdfBuffer: Buffer) {
     const totalLines = parsed.scenes.reduce((sum, s) => sum + s.lines.length, 0);
     await updateProgress(playId, `Found ${parsed.characters.length} characters and ${parsed.scenes.length} scenes (${totalLines} lines)`);
 
-    // Update title if AI derived a better one from the script's cover page
-    if (parsed.title) {
-      await supabase.from("plays").update({ title: parsed.title }).eq("id", playId);
-      console.log(`[bg:${playId}] AI-derived title: "${parsed.title}"`);
+    // Derive the best title from first page image + filename + AI-parsed title
+    try {
+      const titleDoc = mupdf.Document.openDocument(pdfBuffer, "application/pdf");
+      const titlePage = titleDoc.loadPage(0);
+      const titlePixmap = titlePage.toPixmap(mupdf.Matrix.scale(1, 1), mupdf.ColorSpace.DeviceRGB, false, true);
+      const titlePng = Buffer.from(titlePixmap.asPNG()).toString("base64");
+      titlePixmap.destroy();
+      titlePage.destroy();
+      titleDoc.destroy();
+
+      const titleClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      const titleResp = await titleClient.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 100,
+        messages: [{ role: "user", content: [
+          { type: "image", source: { type: "base64", media_type: "image/png", data: titlePng } },
+          { type: "text", text: `What is the title of this play or musical?\n\nFilename: "${userTitle}"\nTitle from parser: "${parsed.title ?? "not found"}"\n\nReturn ONLY the clean title as it would appear on a playbill. No quotes, no file extensions, no extra info.` },
+        ] }],
+      });
+      const cleanTitle = (titleResp.content[0] as { text: string }).text.trim();
+      if (cleanTitle && cleanTitle !== userTitle) {
+        await supabase.from("plays").update({ title: cleanTitle }).eq("id", playId);
+        // Delete stale cover so it regenerates with the clean title
+        const staleCover = path.join(COVERS_DIR, `${playId}.jpg`);
+        if (fs.existsSync(staleCover)) fs.unlinkSync(staleCover);
+        console.log(`[bg:${playId}] Resolved title: "${cleanTitle}"`);
+      }
+    } catch (err) {
+      console.warn(`[bg:${playId}] Title cleanup failed, keeping original:`, err);
     }
 
     // Create characters
@@ -428,7 +455,7 @@ router.post(
       res.status(201).json(play);
 
       // Fire off background processing (don't await)
-      processPlayInBackground(play.id, file.buffer).catch(console.error);
+      processPlayInBackground(play.id, file.buffer, title).catch(console.error);
     } catch (err) {
       console.error("[upload] FAILED:", err);
       res.status(500).json({ error: "Internal server error" });

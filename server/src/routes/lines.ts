@@ -11,7 +11,7 @@ router.get("/scenes/:sceneId/lines", authMiddleware, async (req: Request, res: R
 
     const { data: lines, error } = await supabase
       .from("lines")
-      .select("id, scene_id, character_id, character_ids, text, type, sort, edited, characters(name)")
+      .select("id, scene_id, character_id, character_ids, text, type, sort, edited, hidden, characters(name)")
       .eq("scene_id", sceneId)
       .order("sort");
     if (error) throw error;
@@ -47,18 +47,25 @@ router.get("/scenes/:sceneId/lines", authMiddleware, async (req: Request, res: R
 router.patch("/lines/:id", authMiddleware, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { text, character_ids } = req.body;
+    const { text, character_ids, hidden } = req.body;
 
-    const updates: Record<string, unknown> = { edited: true };
-    if (text && typeof text === "string") updates.text = text;
+    const updates: Record<string, unknown> = {};
+    if (text && typeof text === "string") {
+      updates.text = text;
+      updates.edited = true;
+    }
     if (character_ids !== undefined) {
       const ids = Array.isArray(character_ids) ? character_ids : [];
       updates.character_ids = ids;
       updates.character_id = ids[0] ?? null; // keep primary in sync
+      updates.edited = true;
+    }
+    if (typeof hidden === "boolean") {
+      updates.hidden = hidden;
     }
 
-    if (Object.keys(updates).length <= 1) {
-      res.status(400).json({ error: "text or character_ids is required" });
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: "text, character_ids, or hidden is required" });
       return;
     }
 
@@ -66,7 +73,7 @@ router.patch("/lines/:id", authMiddleware, async (req: Request, res: Response) =
       .from("lines")
       .update(updates)
       .eq("id", id)
-      .select("id, scene_id, character_id, character_ids, text, type, sort, edited")
+      .select("id, scene_id, character_id, character_ids, text, type, sort, edited, hidden")
       .single();
 
     if (error) {

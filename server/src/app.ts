@@ -11,6 +11,8 @@ import usersRoutes from "./routes/users.js";
 import ttsRoutes from "./routes/tts.js";
 import uploadRoutes from "./routes/upload.js";
 import coversRoutes from "./routes/covers.js";
+import bookmarksRoutes from "./routes/bookmarks.js";
+import searchRoutes from "./routes/search.js";
 
 const app = express();
 
@@ -34,6 +36,8 @@ app.use("/api/users", usersRoutes);
 app.use("/api/tts", ttsRoutes);
 app.use("/api/plays", uploadRoutes);
 app.use("/api/covers", coversRoutes);
+app.use("/api", bookmarksRoutes);  // /api/bookmarks and /api/plays/:playId/bookmarks
+app.use("/api", searchRoutes);     // /api/plays/:playId/search
 
 // 404 handler
 app.use((_req, res) => {

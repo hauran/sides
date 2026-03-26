@@ -81,16 +81,18 @@
 
 ## Milestone 7: Script Navigation & Bookmarks
 
+- Line context menu: refactor long-press from directly opening editor to showing a context menu with options: Edit, Bookmark, Skip
 - Jump to next line: "Next" button in toolbar scrolls to and highlights the user's next upcoming line
 - Jump to previous line: "Prev" button scrolls back to the user's previous line
 - Line search: search bar filters lines by text content, highlights matches in-place
 - Scene search: search across all scenes in a play, jump directly to a matching line
 - Bookmarks: tap a bookmark icon on any line to pin it for quick access
 - Bookmarks panel: slide-out or bottom sheet showing all bookmarked lines, tap to jump
+- Show your play bookmarks in the play landing page
 - Cue line highlighting: option to highlight the line before each of your lines (your "cue")
 - Line count summary: "You have 24 lines in this scene" shown in scene header
 
-**Done when:** User can quickly navigate to their lines via next/prev buttons, search for specific dialogue, bookmark important lines, and see cue lines highlighted.
+**Done when:** User can quickly navigate to their lines via next/prev buttons, search for specific dialogue, bookmark important lines, see cue lines highlighted, and long-press any line to access edit/bookmark/skip via context menu.
 
 ---
 
@@ -137,7 +139,20 @@
 
 ---
 
-## Milestone 11: Polish & Ship
+## Milestone 11: Line Management
+
+- Long-press a line in rehearsal to mark it as "cut" (hidden from rehearsal flow)
+- Cut lines are visually struck through / dimmed but still visible in edit mode
+- TTS skips cut lines during playback
+- Undo cut: long-press again to restore
+- `hidden` boolean column on lines table
+- Bulk cut/restore from play editor (e.g. select multiple lines)
+
+**Done when:** User can long-press any line to cut it, line disappears from rehearsal flow and TTS, and can be restored.
+
+---
+
+## Milestone 12: Polish & Ship
 
 - Design language applied: purple/amber palette, serif for script lines, sans-serif for UI chrome
 - Avatar component: user photo or initials fallback

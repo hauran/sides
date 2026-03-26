@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -10,11 +10,13 @@ import {
   Platform,
   ActivityIndicator,
   FlatList,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { usePlayStore } from '../../../src/store/usePlayStore';
 import { useUserStore } from '../../../src/store/useUserStore';
+import { useBookmarkStore } from '../../../src/store/useBookmarkStore';
 import { api } from '../../../src/lib/api';
 import { colors, spacing, radii, typography, shadows } from '../../../src/lib/theme';
 
@@ -52,7 +54,30 @@ export default function PlayDetailScreen() {
   const play = usePlayStore((s) => (playId ? s.plays[playId] : undefined));
   const currentUser = useUserStore((s) => s.currentUser);
   const removePlay = usePlayStore((s) => s.removePlay);
+  const bookmarks = useBookmarkStore((s) => s.bookmarks);
+  const fetchBookmarks = useBookmarkStore((s) => s.fetchBookmarks);
   const [detail, setDetail] = useState<PlayDetail | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<{ id: string; text: string; scene_id: string; scene_name: string; character_name: string }[]>([]);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function handleSearchChange(text: string) {
+    setSearchQuery(text);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    if (!text.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    searchDebounceRef.current = setTimeout(async () => {
+      if (!playId) return;
+      try {
+        const results = await api<typeof searchResults>(`/plays/${playId}/search?q=${encodeURIComponent(text.trim())}`);
+        setSearchResults(results);
+      } catch (err) {
+        console.error('Search error:', err);
+      }
+    }, 300);
+  }
 
   const fetchDetail = useCallback(() => {
     if (playId) {
@@ -62,7 +87,16 @@ export default function PlayDetailScreen() {
 
   useEffect(() => {
     fetchDetail();
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
   }, [fetchDetail]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (playId) fetchBookmarks(playId);
+    }, [playId])
+  );
 
   function showCharacterMenu(characterId: string, characterName: string, isAssignedToMe: boolean) {
     const options = isAssignedToMe
@@ -223,6 +257,36 @@ export default function PlayDetailScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
+        {/* Search bar */}
+        <TextInput
+          style={styles.searchBar}
+          placeholder="Search lines..."
+          placeholderTextColor={colors.textSecondary}
+          value={searchQuery}
+          onChangeText={handleSearchChange}
+        />
+
+        {/* Search results */}
+        {searchResults.length > 0 && (
+          <View style={styles.searchResults}>
+            {searchResults.map((r) => (
+              <Pressable
+                key={r.id}
+                style={({ pressed }) => [styles.searchResultItem, pressed && { opacity: 0.7 }]}
+                onPress={() => {
+                  setSearchQuery('');
+                  setSearchResults([]);
+                  router.push(`/rehearse/${r.scene_id}?characterIds=${myCharacterIds.join(',')}&scrollToLine=${r.id}`);
+                }}
+              >
+                <Text style={styles.searchResultScene}>{r.scene_name}</Text>
+                <Text style={styles.searchResultChar}>{r.character_name}</Text>
+                <Text style={styles.searchResultText} numberOfLines={1}>{r.text}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+
         {/* Cast section */}
         <Text style={styles.sectionLabel}>CAST</Text>
         {characters.length === 0 ? (
@@ -302,6 +366,36 @@ export default function PlayDetailScreen() {
             ))}
           </View>
         )}
+
+        {/* Bookmarks section */}
+        <Text style={[styles.sectionLabel, styles.scenesLabel]}>BOOKMARKS</Text>
+        {(() => {
+          const bookmarkList = Object.values(bookmarks).filter((b) => b.scene_id);
+          if (bookmarkList.length === 0) {
+            return <Text style={styles.emptyText}>No bookmarks yet</Text>;
+          }
+          return (
+            <View style={styles.scenesList}>
+              {bookmarkList.map((b) => (
+                <Pressable
+                  key={b.id}
+                  style={({ pressed }) => [
+                    styles.bookmarkCard,
+                    pressed && styles.sceneCardPressed,
+                  ]}
+                  onPress={() => router.push(`/rehearse/${b.scene_id}?characterIds=${myCharacterIds.join(',')}&scrollToLine=${b.line_id}`)}
+                >
+                  <View style={styles.bookmarkContent}>
+                    <Text style={styles.bookmarkCharacter}>{b.character_name ?? 'Unknown'}</Text>
+                    <Text style={styles.bookmarkText} numberOfLines={1}>{b.line_text}</Text>
+                    <Text style={styles.bookmarkScene}>{b.scene_name}</Text>
+                  </View>
+                  <Text style={styles.bookmarkIcon}>{'\u2605'}</Text>
+                </Pressable>
+              ))}
+            </View>
+          );
+        })()}
 
         {/* Leave play */}
         <Pressable style={styles.leaveButton} onPress={handleLeavePlay}>
@@ -474,6 +568,80 @@ const styles = StyleSheet.create({
     color: colors.coral,
     textAlign: 'center',
     marginTop: spacing.xxxxl,
+  },
+  searchBar: {
+    height: 40,
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radii.full,
+    paddingHorizontal: spacing.lg,
+    fontSize: 15,
+    color: colors.text,
+    marginBottom: spacing.lg,
+  },
+  searchResults: {
+    marginBottom: spacing.lg,
+    gap: spacing.xs,
+  },
+  searchResultItem: {
+    backgroundColor: colors.surface,
+    borderRadius: radii.md,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    ...shadows.sm,
+  },
+  searchResultScene: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    color: colors.rose,
+    marginBottom: 1,
+  },
+  searchResultChar: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.sage,
+    marginBottom: 2,
+  },
+  searchResultText: {
+    fontSize: 13,
+    color: colors.text,
+    fontFamily: 'Georgia',
+  },
+  bookmarkContent: {
+    flex: 1,
+  },
+  bookmarkCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radii.lg,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xl,
+    flexDirection: 'row',
+    alignItems: 'center',
+    ...shadows.sm,
+  },
+  bookmarkCharacter: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    color: colors.honey,
+    marginBottom: 2,
+  },
+  bookmarkText: {
+    fontSize: 14,
+    color: colors.text,
+    fontFamily: 'Georgia',
+  },
+  bookmarkScene: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  bookmarkIcon: {
+    fontSize: 16,
+    color: colors.honey,
+    marginLeft: spacing.md,
   },
   leaveButton: {
     marginTop: spacing.xxxxl,

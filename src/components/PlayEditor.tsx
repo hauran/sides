@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  PanResponder,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -20,8 +21,8 @@ import { api, API_URL, devUserId } from '../lib/api';
 import type { Play } from '../types';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
-const IMAGE_WIDTH = SCREEN_WIDTH - spacing.xl * 2 - 4; // minus border width
-const IMAGE_HEIGHT = IMAGE_WIDTH * 9 / 16; // 16:9 matches picker aspect ratio
+const IMAGE_WIDTH = SCREEN_WIDTH - spacing.xl * 2 - 4;
+const IMAGE_HEIGHT = IMAGE_WIDTH * 9 / 16;
 
 interface PlayEditorProps {
   play: Play;
@@ -35,6 +36,17 @@ export function PlayEditor({ play, coverUrl, onClose, onSaved }: PlayEditorProps
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [localCoverUrl, setLocalCoverUrl] = useState<string | null>(null);
+  const [cropDirty, setCropDirty] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+
+  // Pan/zoom state (using refs to avoid re-renders during gestures)
+  const scaleRef = useRef(1);
+  const txRef = useRef(0);
+  const tyRef = useRef(0);
+  const lastDistance = useRef(0);
+  const lastTx = useRef(0);
+  const lastTy = useRef(0);
+  const [, forceUpdate] = useState(0);
 
   const displayCover = localCoverUrl ?? coverUrl;
 
@@ -43,6 +55,93 @@ export function PlayEditor({ play, coverUrl, onClose, onSaved }: PlayEditorProps
     setPrevId(play.id);
     setTitle(play.title);
     setLocalCoverUrl(null);
+    setCropDirty(false);
+    scaleRef.current = 1;
+    txRef.current = 0;
+    tyRef.current = 0;
+  }
+
+  function clamp(val: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, val));
+  }
+
+  function clampTranslation(tx: number, ty: number, s: number) {
+    const maxTx = Math.max(0, (IMAGE_WIDTH * s - IMAGE_WIDTH) / 2);
+    const maxTy = Math.max(0, (IMAGE_HEIGHT * s - IMAGE_HEIGHT) / 2);
+    return {
+      x: clamp(tx, -maxTx, maxTx),
+      y: clamp(ty, -maxTy, maxTy),
+    };
+  }
+
+  function getDistance(touches: any[]) {
+    const dx = touches[0].pageX - touches[1].pageX;
+    const dy = touches[0].pageY - touches[1].pageY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (evt) => {
+        lastTx.current = txRef.current;
+        lastTy.current = tyRef.current;
+        if (evt.nativeEvent.touches.length === 2) {
+          lastDistance.current = getDistance(evt.nativeEvent.touches);
+        }
+      },
+      onPanResponderMove: (evt, gestureState) => {
+        const touches = evt.nativeEvent.touches;
+        if (touches.length === 2) {
+          // Pinch zoom
+          const dist = getDistance(touches);
+          if (lastDistance.current > 0) {
+            const newScale = clamp(scaleRef.current * (dist / lastDistance.current), 1, 5);
+            scaleRef.current = newScale;
+          }
+          lastDistance.current = dist;
+          const clamped = clampTranslation(txRef.current, tyRef.current, scaleRef.current);
+          txRef.current = clamped.x;
+          tyRef.current = clamped.y;
+        } else {
+          // Pan
+          const newTx = lastTx.current + gestureState.dx;
+          const newTy = lastTy.current + gestureState.dy;
+          const clamped = clampTranslation(newTx, newTy, scaleRef.current);
+          txRef.current = clamped.x;
+          tyRef.current = clamped.y;
+        }
+        forceUpdate(n => n + 1);
+      },
+      onPanResponderRelease: () => {
+        lastDistance.current = 0;
+        setCropDirty(true);
+      },
+    })
+  ).current;
+
+  async function handleRegenerate() {
+    setRegenerating(true);
+    try {
+      // Delete cached cover
+      await api(`/covers/${play.id}`, { method: 'DELETE' });
+      // Regenerate
+      const data = await api<{ cover_uri?: string }>(`/covers/${play.id}`, { method: 'POST' });
+      if (data.cover_uri) {
+        setLocalCoverUrl(null);
+        setCropDirty(false);
+        scaleRef.current = 1;
+        txRef.current = 0;
+        tyRef.current = 0;
+        onSaved({ cover_uri: data.cover_uri });
+      }
+    } catch (err) {
+      console.error('Regenerate failed:', err);
+      Alert.alert('Error', 'Failed to regenerate cover.');
+    } finally {
+      setRegenerating(false);
+    }
   }
 
   async function handlePickImage() {
@@ -55,6 +154,10 @@ export function PlayEditor({ play, coverUrl, onClose, onSaved }: PlayEditorProps
 
     const asset = result.assets[0];
     setLocalCoverUrl(asset.uri);
+    setCropDirty(false);
+    scaleRef.current = 1;
+    txRef.current = 0;
+    tyRef.current = 0;
   }
 
   async function handleSave() {
@@ -101,6 +204,24 @@ export function PlayEditor({ play, coverUrl, onClose, onSaved }: PlayEditorProps
           return;
         }
         setUploading(false);
+      } else if (cropDirty) {
+        // Send crop params to server
+        const s = scaleRef.current;
+        const tx = txRef.current;
+        const ty = tyRef.current;
+
+        const viewFracW = 1 / s;
+        const viewFracH = 1 / s;
+        const centerX = 0.5 - (tx / IMAGE_WIDTH) / s;
+        const centerY = 0.5 - (ty / IMAGE_HEIGHT) / s;
+        const cropX = Math.max(0, centerX - viewFracW / 2);
+        const cropY = Math.max(0, centerY - viewFracH / 2);
+
+        await api(`/covers/${play.id}/crop`, {
+          method: 'PATCH',
+          body: JSON.stringify({ x: cropX, y: cropY, zoom: s }),
+        });
+        updates.cover_uri = `/api/covers/${play.id}/image`;
       }
 
       onSaved(updates);
@@ -113,7 +234,11 @@ export function PlayEditor({ play, coverUrl, onClose, onSaved }: PlayEditorProps
     }
   }
 
-  const isBusy = saving || uploading;
+  const isBusy = saving || uploading || regenerating;
+
+  const imageTransform = displayCover
+    ? { transform: [{ translateX: txRef.current }, { translateY: tyRef.current }, { scale: scaleRef.current }] }
+    : undefined;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -121,7 +246,6 @@ export function PlayEditor({ play, coverUrl, onClose, onSaved }: PlayEditorProps
           style={styles.flex}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
-          {/* Header — matches New Script */}
           <View style={styles.header}>
             <Text style={styles.headerTitle}>Edit Play</Text>
             <Pressable
@@ -139,14 +263,14 @@ export function PlayEditor({ play, coverUrl, onClose, onSaved }: PlayEditorProps
             contentContainerStyle={styles.content}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
+            scrollEnabled={!displayCover || scaleRef.current <= 1}
           >
-            {/* Cover image area — styled like the drop zone */}
             <View style={[styles.imageCard, displayCover && styles.imageCardWithImage]}>
               {displayCover ? (
-                <View style={styles.cropContainer}>
+                <View style={styles.cropContainer} {...panResponder.panHandlers}>
                   <Image
                     source={{ uri: displayCover }}
-                    style={styles.cropImage}
+                    style={[styles.cropImage, imageTransform]}
                     resizeMode="cover"
                   />
                 </View>
@@ -161,13 +285,22 @@ export function PlayEditor({ play, coverUrl, onClose, onSaved }: PlayEditorProps
 
             {displayCover && (
               <View style={styles.imageControls}>
-                <Pressable style={styles.changeImagePill} onPress={handlePickImage} disabled={isBusy}>
-                  <Text style={styles.changeImageText}>Change Image</Text>
-                </Pressable>
+                <Text style={styles.cropHint}>Pinch to zoom, drag to pan</Text>
+                <View style={styles.imageButtonRow}>
+                  <Pressable style={styles.changeImagePill} onPress={handlePickImage} disabled={isBusy}>
+                    <Text style={styles.changeImageText}>Change Image</Text>
+                  </Pressable>
+                  <Pressable style={styles.changeImagePill} onPress={handleRegenerate} disabled={isBusy}>
+                    {regenerating ? (
+                      <ActivityIndicator color={colors.rose} size="small" />
+                    ) : (
+                      <Text style={styles.changeImageText}>Regenerate</Text>
+                    )}
+                  </Pressable>
+                </View>
               </View>
             )}
 
-            {/* Title input */}
             <TextInput
               style={styles.titleInput}
               value={title}
@@ -179,7 +312,6 @@ export function PlayEditor({ play, coverUrl, onClose, onSaved }: PlayEditorProps
             />
           </ScrollView>
 
-          {/* Pinned save button — matches New Script CTA */}
           <View style={styles.bottomBar}>
             <Pressable
               style={[styles.saveButton, isBusy && styles.saveButtonDisabled]}
@@ -236,8 +368,6 @@ const styles = StyleSheet.create({
     paddingTop: spacing.lg,
     paddingBottom: spacing.lg,
   },
-
-  // Image card — styled like the drop zone in New Script
   imageCard: {
     backgroundColor: colors.surface,
     borderWidth: 2,
@@ -284,12 +414,19 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.textSecondary,
   },
-
-  // Controls below image
   imageControls: {
     alignItems: 'center',
     gap: spacing.sm,
     marginBottom: spacing.xxl,
+  },
+  cropHint: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    fontStyle: 'italic',
+  },
+  imageButtonRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
   },
   changeImagePill: {
     backgroundColor: colors.surfaceAlt,
@@ -302,8 +439,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.rose,
   },
-
-  // Title input
   titleInput: {
     backgroundColor: colors.surfaceAlt,
     borderRadius: radii.lg,
@@ -312,8 +447,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: colors.text,
   },
-
-  // Pinned bottom bar — matches New Script
   bottomBar: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.md,

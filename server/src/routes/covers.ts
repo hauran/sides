@@ -20,6 +20,7 @@ const CARD_WIDTH = 800;
 const CARD_HEIGHT = 450; // 16:9 aspect ratio
 
 /** Normalize a play title for Wikipedia lookup */
+const SMALL_WORDS = new Set(["a", "an", "the", "and", "but", "or", "for", "nor", "of", "in", "on", "at", "to", "by", "is"]);
 function normalizeTitle(raw: string): string {
   return raw
     .replace(/&/g, "and")
@@ -27,7 +28,12 @@ function normalizeTitle(raw: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .split(" ")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .map((w, i) => {
+      const lower = w.toLowerCase();
+      // Always capitalize first word, keep small words lowercase
+      if (i > 0 && SMALL_WORDS.has(lower)) return lower;
+      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    })
     .join(" ");
 }
 
@@ -131,10 +137,10 @@ router.post("/:playId", authMiddleware, async (req: Request, res: Response) => {
       return;
     }
 
-    // Get play title
+    // Get play title and status
     const { data: play, error: playErr } = await supabase
       .from("plays")
-      .select("title")
+      .select("title, status")
       .eq("id", playId)
       .single();
 
@@ -143,10 +149,19 @@ router.post("/:playId", authMiddleware, async (req: Request, res: Response) => {
       return;
     }
 
+    // Don't generate/cache a cover while still processing — title may change
+    if (play.status === "processing") {
+      res.status(202).json({ pending: true });
+      return;
+    }
+
     // Find a usable image (Wikipedia → Commons fallback)
     const found = await findImage(play.title);
 
     if (found) {
+      // Save source image for later re-cropping
+      const srcPath = path.join(COVERS_DIR, `${playId}_src.jpg`);
+      await sharp(found.buffer).jpeg({ quality: 90 }).toFile(srcPath);
       // Smart crop — 'attention' strategy finds the focal point
       await sharp(found.buffer)
         .resize(CARD_WIDTH, CARD_HEIGHT, {
@@ -242,6 +257,10 @@ router.post("/:playId/upload", authMiddleware, (req: Request, res: Response, nex
 
   try {
     const jpgPath = path.join(COVERS_DIR, `${playId}.jpg`);
+    const srcPath = path.join(COVERS_DIR, `${playId}_src.jpg`);
+
+    // Save source for re-cropping
+    await sharp(file.buffer).jpeg({ quality: 90 }).toFile(srcPath);
 
     // Smart crop from square to 16:9 card dimensions
     await sharp(file.buffer)
@@ -263,6 +282,78 @@ router.post("/:playId/upload", authMiddleware, (req: Request, res: Response, nex
   } catch (err) {
     console.error("Cover upload error:", err);
     res.status(500).json({ error: "Failed to upload cover" });
+  }
+});
+
+// DELETE /api/covers/:playId — delete cached cover + source so it regenerates
+router.delete("/:playId", authMiddleware, async (req: Request, res: Response) => {
+  const { playId } = req.params;
+  const jpgPath = path.join(COVERS_DIR, `${playId}.jpg`);
+  const srcPath = path.join(COVERS_DIR, `${playId}_src.jpg`);
+  if (fs.existsSync(jpgPath)) fs.unlinkSync(jpgPath);
+  if (fs.existsSync(srcPath)) fs.unlinkSync(srcPath);
+  res.json({ ok: true });
+});
+
+// GET /api/covers/:playId/source — serve the full source image for cropping UI
+router.get("/:playId/source", authMiddleware, (req: Request, res: Response) => {
+  const { playId } = req.params;
+  const srcPath = path.join(COVERS_DIR, `${playId}_src.jpg`);
+
+  if (!fs.existsSync(srcPath)) {
+    res.status(404).json({ error: "Source image not found" });
+    return;
+  }
+
+  res.set({ "Content-Type": "image/jpeg" });
+  fs.createReadStream(srcPath).pipe(res);
+});
+
+// PATCH /api/covers/:playId/crop — re-crop the cover from source using pan/zoom params
+// Body: { x: number, y: number, zoom: number }
+//   x, y are the top-left offset as fractions (0-1) of the zoomed source
+//   zoom is the scale factor (1 = fit, >1 = zoomed in)
+router.patch("/:playId/crop", authMiddleware, async (req: Request, res: Response) => {
+  const { playId } = req.params;
+  const { x = 0, y = 0, zoom = 1 } = req.body as { x?: number; y?: number; zoom?: number };
+
+  const srcPath = path.join(COVERS_DIR, `${playId}_src.jpg`);
+  const jpgPath = path.join(COVERS_DIR, `${playId}.jpg`);
+  // Fall back to cropped image if no source exists
+  const imagePath = fs.existsSync(srcPath) ? srcPath : jpgPath;
+  if (!fs.existsSync(imagePath)) {
+    res.status(404).json({ error: "No cover image found" });
+    return;
+  }
+
+  try {
+    const meta = await sharp(imagePath).metadata();
+    const srcW = meta.width!;
+    const srcH = meta.height!;
+
+    // The visible region at the given zoom level
+    const viewW = srcW / zoom;
+    const viewH = srcH / zoom;
+
+    // Clamp extract region to source bounds
+    const left = Math.round(Math.max(0, Math.min(x * srcW, srcW - viewW)));
+    const top = Math.round(Math.max(0, Math.min(y * srcH, srcH - viewH)));
+    const width = Math.round(Math.min(viewW, srcW - left));
+    const height = Math.round(Math.min(viewH, srcH - top));
+
+    const outPath = path.join(COVERS_DIR, `${playId}.jpg`);
+    const tmpPath = path.join(COVERS_DIR, `${playId}_tmp.jpg`);
+    await sharp(imagePath)
+      .extract({ left, top, width, height })
+      .resize(CARD_WIDTH, CARD_HEIGHT, { fit: "cover" })
+      .jpeg({ quality: 85 })
+      .toFile(tmpPath);
+    fs.renameSync(tmpPath, outPath);
+
+    res.json({ cover_uri: `/api/covers/${playId}/image` });
+  } catch (err) {
+    console.error("Cover crop error:", err);
+    res.status(500).json({ error: "Failed to crop cover" });
   }
 });
 

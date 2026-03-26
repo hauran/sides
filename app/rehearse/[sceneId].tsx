@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Animated } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Animated, Modal } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { createAudioPlayer, AudioPlayer, setAudioModeAsync } from 'expo-audio';
 import { ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { colors, radii, shadows } from '../../src/lib/theme';
+import { colors, spacing, radii, shadows, typography } from '../../src/lib/theme';
 import { useSceneStore } from '../../src/store/useSceneStore';
+import { useBookmarkStore } from '../../src/store/useBookmarkStore';
 import { DEV_USER_ID, api, setDevUserId, uploadRecording } from '../../src/lib/api';
 import { createLineSpeaker } from '../../src/lib/tts';
 import { useTranscription, TranscriptionError } from '../../src/hooks/useTranscription';
@@ -33,9 +34,11 @@ function formatElapsed(ms: number): string {
 }
 
 export default function RehearsalScreen() {
-  const { sceneId, characterIds: characterIdsParam } = useLocalSearchParams<{
+  const { sceneId, characterIds: characterIdsParam, scrollToLine, scrollToLast } = useLocalSearchParams<{
     sceneId: string;
     characterIds: string;
+    scrollToLine: string;
+    scrollToLast: string;
   }>();
   const myCharacterIds = useMemo(
     () => new Set((characterIdsParam ?? '').split(',').filter(Boolean)),
@@ -53,10 +56,18 @@ export default function RehearsalScreen() {
   const [state, setState] = useState<RehearsalState>('idle');
   const [mode, setMode] = useState<RehearsalMode>('learning');
   const [characters, setCharacters] = useState<{ id: string; name: string }[]>([]);
+  const [playScenes, setPlayScenes] = useState<{ id: string; name: string; sort: number }[]>([]);
   const [currentLineIndex, setCurrentLineIndex] = useState(0);
   const [linesLoaded, setLinesLoaded] = useState(false);
   const [hintLevel, setHintLevel] = useState(0); // 0 = hidden, 1+ = words revealed
   const [editingLine, setEditingLine] = useState<Line | null>(null);
+  const [hideStageDirections, setHideStageDirections] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
+  const [contextMenuLine, setContextMenuLine] = useState<Line | null>(null);
+  const [showCueLines, setShowCueLines] = useState(false);
+  const [showBookmarksModal, setShowBookmarksModal] = useState(false);
+  const [navFlashIndex, setNavFlashIndex] = useState<number | null>(null);
+  const navFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const micPulseAnim = useRef(new Animated.Value(0.4)).current;
 
@@ -67,6 +78,10 @@ export default function RehearsalScreen() {
   const recordingActiveRef = useRef(false);
   const recPulseAnim = useRef(new Animated.Value(1)).current;
   const addRecording = useCastStore((s) => s.addRecording);
+  const bookmarks = useBookmarkStore((s) => s.bookmarks);
+  const fetchBookmarks = useBookmarkStore((s) => s.fetchBookmarks);
+  const addBookmark = useBookmarkStore((s) => s.addBookmark);
+  const removeBookmark = useBookmarkStore((s) => s.removeBookmark);
 
   // Speech recognition for auto-advance
   const { transcript, isListening, isAvailable: isSpeechAvailable, start: startListening, stop: stopListening, error: speechError } = useTranscription();
@@ -82,10 +97,14 @@ export default function RehearsalScreen() {
         api<{ id: string; name: string; play_id: string; sort: number }>(`/scenes/${sceneId}`)
           .then((s) => {
             useSceneStore.getState().setScene(s);
-            // Fetch characters for the play
+            // Fetch characters, scenes, and bookmarks for the play
             api<{ id: string; name: string }[]>(`/plays/${s.play_id}/characters`)
               .then(setCharacters)
               .catch(console.error);
+            api<{ id: string; name: string; sort: number }[]>(`/plays/${s.play_id}/scenes`)
+              .then(setPlayScenes)
+              .catch(console.error);
+            fetchBookmarks(s.play_id);
           }),
         fetchLines(sceneId),
       ]).then(() => setLinesLoaded(true));
@@ -225,10 +244,11 @@ export default function RehearsalScreen() {
     }
   }, [isRecording]);
 
-  // Stop listening when leaving the screen
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       stopListening();
+      if (navFlashTimer.current) clearTimeout(navFlashTimer.current);
     };
   }, []);
 
@@ -258,6 +278,31 @@ export default function RehearsalScreen() {
     }
   }, [currentLineIndex, state]);
 
+  // Scroll to a specific line on mount (from bookmark or cross-scene nav)
+  const didInitialScroll = useRef(false);
+  useEffect(() => {
+    if (!linesLoaded || didInitialScroll.current) return;
+    if (!scrollToLine && !scrollToLast) return;
+
+    // Find target index
+    let targetIdx = -1;
+    if (scrollToLine) {
+      targetIdx = lines.findIndex((l) => l.id === scrollToLine);
+    } else if (scrollToLast) {
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (isMyLine(lines[i]) && !lines[i].hidden) { targetIdx = i; break; }
+      }
+    }
+    if (targetIdx < 0) { didInitialScroll.current = true; return; }
+
+    // Delay to let onLayout fire for line refs
+    const timer = setTimeout(() => {
+      flashAndScrollTo(targetIdx);
+      didInitialScroll.current = true;
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [linesLoaded, lines]);
+
   // Track whether recording mode just started for the first line countdown
   const isFirstRecordingLineRef = useRef(false);
 
@@ -284,6 +329,12 @@ export default function RehearsalScreen() {
   async function playOtherLine(index: number) {
     const line = lines[index];
     if (!line) return;
+
+    // Never TTS stage directions — just advance
+    if (line.type === 'stage_direction') {
+      advanceFrom(index);
+      return;
+    }
 
     stopCurrentAudio();
     const thisPlayId = playIdRef.current;
@@ -390,12 +441,16 @@ export default function RehearsalScreen() {
     setState('paused');
   }
 
+  function handleKebabMenu() {
+    setShowMenu(prev => !prev);
+  }
+
   function handleLongPressLine(index: number) {
-    // Only allow editing in idle, paused, or my_turn states
+    // Only allow context menu in idle, paused, or my_turn states
     if (state !== 'idle' && state !== 'paused' && state !== 'my_turn') return;
     const line = lines[index];
     if (!line) return;
-    setEditingLine(line);
+    setContextMenuLine(line);
   }
 
   async function handleSaveLineEdit(lineId: string, updates: { text?: string; character_ids?: string[] }) {
@@ -428,6 +483,111 @@ export default function RehearsalScreen() {
     activateLine(currentLineIndex);
   }
 
+  // Next/Prev navigation among user's lines (cross-scene)
+  function handlePrevLine() {
+    for (let i = currentLineIndex - 1; i >= 0; i--) {
+      if (isMyLine(lines[i]) && !lines[i].hidden) {
+        flashAndScrollTo(i);
+        return;
+      }
+    }
+    // Jump to previous scene
+    if (currentSceneIndex <= 0) return;
+    const prevScene = playScenes[currentSceneIndex - 1];
+    if (prevScene) {
+      router.replace(`/rehearse/${prevScene.id}?characterIds=${characterIdsParam ?? ''}&scrollToLast=1`);
+    }
+  }
+
+  function handleNextLine() {
+    for (let i = currentLineIndex + 1; i < lines.length; i++) {
+      if (isMyLine(lines[i]) && !lines[i].hidden) {
+        flashAndScrollTo(i);
+        return;
+      }
+    }
+    // Jump to next scene
+    if (currentSceneIndex < 0 || currentSceneIndex >= playScenes.length - 1) return;
+    const nextScene = playScenes[currentSceneIndex + 1];
+    if (nextScene) {
+      router.replace(`/rehearse/${nextScene.id}?characterIds=${characterIdsParam ?? ''}`);
+    }
+  }
+
+  function flashAndScrollTo(index: number) {
+    setCurrentLineIndex(index);
+    if (navFlashTimer.current) clearTimeout(navFlashTimer.current);
+    setNavFlashIndex(index);
+    const y = lineRefs.current[lines[index]?.id];
+    if (y !== undefined) {
+      scrollRef.current?.scrollTo({ y: Math.max(0, y - 100), animated: true });
+    }
+    navFlashTimer.current = setTimeout(() => {
+      setNavFlashIndex(null);
+    }, 3000);
+  }
+
+  // Toggle bookmark
+  function handleToggleBookmark(lineId: string) {
+    if (lineId in bookmarks) {
+      removeBookmark(lineId);
+    } else {
+      addBookmark(lineId);
+    }
+  }
+
+  // Toggle hidden/skip
+  async function handleToggleHidden(line: Line) {
+    const newHidden = !line.hidden;
+    // Optimistic update
+    useSceneStore.getState().updateLine(line.id, { hidden: newHidden });
+    try {
+      await api(`/lines/${line.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ hidden: newHidden }),
+      });
+    } catch (err) {
+      // Revert on failure
+      useSceneStore.getState().updateLine(line.id, { hidden: !newHidden });
+      console.error('Failed to toggle hidden:', err);
+    }
+  }
+
+  // Compute cue line IDs
+  const cueLineIds = useMemo(() => {
+    if (!showCueLines) return new Set<string>();
+    const ids = new Set<string>();
+    for (let i = 1; i < lines.length; i++) {
+      if (isMyLine(lines[i]) && lines[i].type === 'dialogue') {
+        const prev = lines[i - 1];
+        if (prev && !isMyLine(prev)) {
+          ids.add(prev.id);
+        }
+      }
+    }
+    return ids;
+  }, [lines, showCueLines, myCharacterIds]);
+
+  const currentSceneIndex = useMemo(
+    () => playScenes.findIndex((s) => s.id === sceneId),
+    [playScenes, sceneId]
+  );
+
+  // Check if prev/next exist (including cross-scene)
+  const hasPrevLine = useMemo(() => {
+    for (let i = currentLineIndex - 1; i >= 0; i--) {
+      if (isMyLine(lines[i]) && !lines[i].hidden) return true;
+    }
+    return currentSceneIndex > 0;
+  }, [currentLineIndex, lines, myCharacterIds, currentSceneIndex]);
+
+  const hasNextLine = useMemo(() => {
+    for (let i = currentLineIndex + 1; i < lines.length; i++) {
+      if (isMyLine(lines[i]) && !lines[i].hidden) return true;
+    }
+    return currentSceneIndex >= 0 && currentSceneIndex < playScenes.length - 1;
+  }, [currentLineIndex, lines, myCharacterIds, currentSceneIndex, playScenes.length]);
+
   const currentLineWords = useMemo(
     () => currentLine?.text.split(/\s+/) ?? [],
     [currentLine?.text]
@@ -456,11 +616,16 @@ export default function RehearsalScreen() {
     const active = state !== 'idle';
     const isCurrent = index === currentLineIndex && active;
     const isPast = active && index < currentLineIndex;
+    const isCue = cueLineIds.has(line.id);
+    const isHidden = line.hidden;
 
-    // Past lines fade out, current line gets breathing room via marginVertical
-    if (isPast) return [styles.lineRowBase, styles.lineRowDone];
-    if (isCurrent) return [styles.lineRowBase, styles.lineRowCurrent];
-    return styles.lineRowBase;
+    const base: any[] = [styles.lineRowBase];
+    if (isPast) base.push(styles.lineRowDone);
+    if (isCurrent) base.push(styles.lineRowCurrent);
+    if (isCue) base.push(styles.lineRowCue);
+    if (isHidden) base.push(styles.lineRowHidden);
+    if (navFlashIndex === index) base.push(styles.lineRowFlash);
+    return base;
   }
 
   if (!linesLoaded) {
@@ -474,7 +639,7 @@ export default function RehearsalScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Floating top bar — transparent, no solid band */}
+      {/* Floating top bar */}
       <View style={styles.topBar}>
         <Pressable
           style={styles.backButton}
@@ -485,8 +650,41 @@ export default function RehearsalScreen() {
         <Text style={styles.sceneName} numberOfLines={1}>
           {scene?.name ?? 'Rehearsal'}
         </Text>
-        <View style={{ width: 40 }} />
+        <Pressable style={styles.kebabButton} onPress={handleKebabMenu} hitSlop={12}>
+          <Text style={styles.kebabText}>···</Text>
+        </Pressable>
       </View>
+
+      {/* Popover menu */}
+      {showMenu && (
+        <>
+          <Pressable style={styles.menuBackdrop} onPress={() => setShowMenu(false)} />
+          <View style={styles.menuPopover}>
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => { setHideStageDirections(prev => !prev); setShowMenu(false); }}
+            >
+              <Text style={styles.menuItemText}>
+                {hideStageDirections ? 'Show Stage Directions' : 'Hide Stage Directions'}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => { setShowCueLines(prev => !prev); setShowMenu(false); }}
+            >
+              <Text style={styles.menuItemText}>
+                {showCueLines ? 'Hide Cue Lines' : 'Show Cue Lines'}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => { setShowBookmarksModal(true); setShowMenu(false); }}
+            >
+              <Text style={styles.menuItemText}>Bookmarks</Text>
+            </Pressable>
+          </View>
+        </>
+      )}
 
       {/* Mode switcher — small floating pills */}
       <View style={styles.modeSwitcherRow}>
@@ -553,7 +751,11 @@ export default function RehearsalScreen() {
         style={styles.scriptScroll}
         contentContainerStyle={styles.scriptContent}
       >
-        {lines.map((line, index) => (
+        {lines.map((line, index) => {
+          if (hideStageDirections && line.type === 'stage_direction') return null;
+          const isBookmarked = line.id in bookmarks;
+
+          return (
           <Pressable
             key={line.id}
             onPress={() => handleTapLine(index)}
@@ -565,136 +767,254 @@ export default function RehearsalScreen() {
             <Animated.View
               style={getLineStyle(line, index)}
             >
-              {(line.character_ids?.length > 0 || line.character_id) ? (
-                <>
-                  <View style={styles.characterRow}>
-                    <Text
-                      style={[
-                        styles.characterName,
-                        isMyLine(line) && styles.characterNameMine,
-                      ]}
-                    >
-                      {line.character_name ?? 'UNKNOWN'}
-                    </Text>
-                    {line.edited && (
-                      <Text style={styles.editedIndicator}>(edited)</Text>
-                    )}
-                  </View>
-                  {shouldHideLine(line, index)
-                    ? <Text style={styles.hiddenLineText}>
-                        {index === currentLineIndex && state === 'my_turn' ? getHintText() : '• • •'}
+              <View style={styles.lineRow}>
+                <View style={styles.lineContent}>
+                  {(line.character_ids?.length > 0 || line.character_id) ? (
+                    <>
+                      <View style={styles.lineMetaRow}>
+                        {line.edited && (
+                          <Text style={styles.editedIndicator}>edited</Text>
+                        )}
+                        {line.hidden && (
+                          <Text style={styles.skippedIndicator}>skipped</Text>
+                        )}
+                      </View>
+                      <Text
+                        style={[
+                          styles.characterName,
+                          isMyLine(line) && styles.characterNameMine,
+                        ]}
+                      >
+                        {line.character_name ?? 'UNKNOWN'}
                       </Text>
-                    : <Text style={styles.lineText}>{line.text}</Text>
-                  }
-                </>
-              ) : (
-                <Text style={styles.stageDirection}>{line.text}</Text>
-              )}
+                      {shouldHideLine(line, index)
+                        ? <Text style={styles.hiddenLineText}>
+                            {index === currentLineIndex && state === 'my_turn' ? getHintText() : '• • •'}
+                          </Text>
+                        : <Text style={[styles.lineText, line.hidden && styles.lineTextHidden]}>
+                            {line.text}
+                          </Text>
+                      }
+                    </>
+                  ) : (
+                    <Text style={[styles.stageDirection, line.hidden && styles.lineTextHidden]}>
+                      {line.text}
+                    </Text>
+                  )}
+                </View>
+                {/* Bookmark indicator */}
+                <Pressable
+                  style={styles.bookmarkTouchable}
+                  onPress={() => handleToggleBookmark(line.id)}
+                  hitSlop={8}
+                >
+                  <Text style={isBookmarked ? styles.bookmarkFilled : styles.bookmarkOutline}>
+                    {isBookmarked ? '\u2605' : '\u2606'}
+                  </Text>
+                </Pressable>
+              </View>
             </Animated.View>
           </Pressable>
-        ))}
+          );
+        })}
       </ScrollView>
 
       {/* Floating footer pill */}
       <View style={styles.footerWrapper}>
-        <View style={styles.footerPill}>
-          {state === 'idle' && (
-            <Pressable style={styles.startButton} onPress={startRehearsal}>
-              <Text style={styles.startButtonText}>Start Rehearsing</Text>
-            </Pressable>
-          )}
+        <View style={styles.footerRow}>
+          <Pressable
+            style={styles.footerNavButton}
+            onPress={handlePrevLine}
+            disabled={!hasPrevLine}
+            hitSlop={8}
+          >
+            <Text style={[styles.footerNavText, !hasPrevLine && styles.footerNavDisabled]}>{'\u2039'}</Text>
+          </Pressable>
+          <View style={styles.footerPill}>
+            {state === 'idle' && (
+              <Pressable style={styles.startButton} onPress={startRehearsal}>
+                <Text style={styles.startButtonText}>Start Rehearsing</Text>
+              </Pressable>
+            )}
 
-          {state === 'my_turn' && (
-            <View style={styles.myTurnFooter}>
-              {/* Mic/recording status integrated into pill */}
-              {mode === 'recording' && isRecording && (
-                <View style={styles.statusRow}>
-                  <Animated.View style={[styles.recDot, { opacity: recPulseAnim }]} />
-                  <Text style={styles.recLabel} numberOfLines={1}>
-                    Recording {formatElapsed(durationMillis)}
-                  </Text>
+            {state === 'my_turn' && (
+              <View style={styles.myTurnFooter}>
+                {/* Mic/recording status integrated into pill */}
+                {mode === 'recording' && isRecording && (
+                  <View style={styles.statusRow}>
+                    <Animated.View style={[styles.recDot, { opacity: recPulseAnim }]} />
+                    <Text style={styles.recLabel} numberOfLines={1}>
+                      Recording {formatElapsed(durationMillis)}
+                    </Text>
+                  </View>
+                )}
+                {mode === 'recording' && isUploading && (
+                  <View style={styles.statusRow}>
+                    <ActivityIndicator size="small" color={colors.coral} />
+                    <Text style={styles.recLabel}>Uploading...</Text>
+                  </View>
+                )}
+                {isListening && !(mode === 'recording' && isRecording) && (
+                  <View style={styles.statusRow}>
+                    <Animated.View style={[styles.micDot, { opacity: micPulseAnim }]} />
+                    <Text style={styles.micLabel} numberOfLines={1}>
+                      {transcript
+                        ? `"${transcript.length > 40 ? '...' + transcript.slice(-40) : transcript}"`
+                        : 'Listening...'}
+                    </Text>
+                  </View>
+                )}
+                {!isListening && isSpeechAvailable && speechError && (
+                  <View style={styles.statusRow}>
+                    <Text style={styles.micErrorText}>{TRANSCRIPTION_ERROR_MESSAGES[speechError]}</Text>
+                  </View>
+                )}
+                <View style={styles.controlRow}>
+                  <Pressable style={styles.pauseButton} onPress={handlePause}>
+                    <Text style={styles.pauseButtonText}>| |</Text>
+                  </Pressable>
+                  {mode === 'practice' && (
+                    <Pressable onPress={handleHint}>
+                      <Text style={styles.hintButtonText}>Hint</Text>
+                    </Pressable>
+                  )}
+                  <View style={styles.controlSpacer} />
+                  <Pressable style={styles.doneButton} onPress={handleAdvance}>
+                    <Text style={styles.doneButtonText}>Done</Text>
+                  </Pressable>
                 </View>
-              )}
-              {mode === 'recording' && isUploading && (
-                <View style={styles.statusRow}>
-                  <ActivityIndicator size="small" color={colors.coral} />
-                  <Text style={styles.recLabel}>Uploading...</Text>
-                </View>
-              )}
-              {isListening && !(mode === 'recording' && isRecording) && (
-                <View style={styles.statusRow}>
-                  <Animated.View style={[styles.micDot, { opacity: micPulseAnim }]} />
-                  <Text style={styles.micLabel} numberOfLines={1}>
-                    {transcript
-                      ? `"${transcript.length > 40 ? '...' + transcript.slice(-40) : transcript}"`
-                      : 'Listening...'}
-                  </Text>
-                </View>
-              )}
-              {!isListening && isSpeechAvailable && speechError && (
-                <View style={styles.statusRow}>
-                  <Text style={styles.micErrorText}>{TRANSCRIPTION_ERROR_MESSAGES[speechError]}</Text>
-                </View>
-              )}
+              </View>
+            )}
+
+            {state === 'loading' && (
               <View style={styles.controlRow}>
                 <Pressable style={styles.pauseButton} onPress={handlePause}>
                   <Text style={styles.pauseButtonText}>| |</Text>
                 </Pressable>
-                {mode === 'practice' && (
-                  <Pressable onPress={handleHint}>
-                    <Text style={styles.hintButtonText}>Hint</Text>
-                  </Pressable>
-                )}
                 <View style={styles.controlSpacer} />
-                <Pressable style={styles.doneButton} onPress={handleAdvance}>
-                  <Text style={styles.doneButtonText}>Done</Text>
-                </Pressable>
+                <Text style={styles.speakingText}>
+                  {currentLine?.character_name ?? 'Other'} is speaking...
+                </Text>
+                <View style={styles.controlSpacer} />
               </View>
-            </View>
-          )}
+            )}
 
-          {state === 'loading' && (
-            <View style={styles.controlRow}>
-              <Pressable style={styles.pauseButton} onPress={handlePause}>
-                <Text style={styles.pauseButtonText}>| |</Text>
+            {state === 'playing' && (
+              <View style={styles.controlRow}>
+                <Pressable style={styles.pauseButton} onPress={handlePause}>
+                  <Text style={styles.pauseButtonText}>| |</Text>
+                </Pressable>
+                <View style={styles.controlSpacer} />
+                <Text style={styles.speakingText}>
+                  {currentLine?.character_name ?? 'Other'} is speaking...
+                </Text>
+                <View style={styles.controlSpacer} />
+              </View>
+            )}
+
+            {state === 'paused' && (
+              <Pressable style={styles.resumeButton} onPress={handleResume}>
+                <Text style={styles.resumeButtonText}>Resume</Text>
               </Pressable>
-              <View style={styles.controlSpacer} />
-              <Text style={styles.speakingText}>
-                {currentLine?.character_name ?? 'Other'} is speaking...
-              </Text>
-              <View style={styles.controlSpacer} />
-            </View>
-          )}
+            )}
 
-          {state === 'playing' && (
-            <View style={styles.controlRow}>
-              <Pressable style={styles.pauseButton} onPress={handlePause}>
-                <Text style={styles.pauseButtonText}>| |</Text>
+            {state === 'done' && (
+              <Pressable
+                style={styles.againButton}
+                onPress={() => { setState('idle'); setCurrentLineIndex(0); }}
+              >
+                <Text style={styles.againButtonText}>Again!</Text>
               </Pressable>
-              <View style={styles.controlSpacer} />
-              <Text style={styles.speakingText}>
-                {currentLine?.character_name ?? 'Other'} is speaking...
-              </Text>
-              <View style={styles.controlSpacer} />
-            </View>
-          )}
-
-          {state === 'paused' && (
-            <Pressable style={styles.resumeButton} onPress={handleResume}>
-              <Text style={styles.resumeButtonText}>Resume</Text>
-            </Pressable>
-          )}
-
-          {state === 'done' && (
-            <Pressable
-              style={styles.againButton}
-              onPress={() => { setState('idle'); setCurrentLineIndex(0); }}
-            >
-              <Text style={styles.againButtonText}>Again!</Text>
-            </Pressable>
-          )}
+            )}
+          </View>
+          <Pressable
+            style={styles.footerNavButton}
+            onPress={handleNextLine}
+            disabled={!hasNextLine}
+            hitSlop={8}
+          >
+            <Text style={[styles.footerNavText, !hasNextLine && styles.footerNavDisabled]}>{'\u203A'}</Text>
+          </Pressable>
         </View>
       </View>
+
+      {/* Context menu */}
+      {contextMenuLine && (
+        <>
+          <Pressable style={styles.menuBackdrop} onPress={() => setContextMenuLine(null)} />
+          <View style={styles.contextMenu}>
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => {
+                setEditingLine(contextMenuLine);
+                setContextMenuLine(null);
+              }}
+            >
+              <Text style={styles.menuItemText}>Edit</Text>
+            </Pressable>
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => {
+                handleToggleBookmark(contextMenuLine.id);
+                setContextMenuLine(null);
+              }}
+            >
+              <Text style={styles.menuItemText}>
+                {contextMenuLine.id in bookmarks ? 'Remove Bookmark' : 'Bookmark'}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => {
+                handleToggleHidden(contextMenuLine);
+                setContextMenuLine(null);
+              }}
+            >
+              <Text style={styles.menuItemText}>
+                {contextMenuLine.hidden ? 'Unskip' : 'Skip'}
+              </Text>
+            </Pressable>
+          </View>
+        </>
+      )}
+
+      {/* Bookmarks modal */}
+      <Modal visible={showBookmarksModal} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Bookmarks</Text>
+              <Pressable onPress={() => setShowBookmarksModal(false)}>
+                <Text style={styles.modalClose}>{'\u2715'}</Text>
+              </Pressable>
+            </View>
+            <ScrollView>
+              {(() => {
+                const sceneBookmarks = lines.filter((l) => l.id in bookmarks);
+                if (sceneBookmarks.length === 0) {
+                  return <Text style={styles.emptyBookmarks}>No bookmarks in this scene</Text>;
+                }
+                return sceneBookmarks.map((line) => (
+                  <Pressable
+                    key={line.id}
+                    style={styles.bookmarkModalItem}
+                    onPress={() => {
+                      setShowBookmarksModal(false);
+                      const y = lineRefs.current[line.id];
+                      if (y !== undefined) {
+                        scrollRef.current?.scrollTo({ y: Math.max(0, y - 100), animated: true });
+                      }
+                    }}
+                  >
+                    <Text style={styles.bookmarkModalChar}>{line.character_name ?? 'Stage Direction'}</Text>
+                    <Text style={styles.bookmarkModalText} numberOfLines={2}>{line.text}</Text>
+                  </Pressable>
+                ));
+              })()}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       {editingLine && (
         <LineEditor
@@ -745,26 +1065,52 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontWeight: '600',
   },
+  kebabButton: {
+    width: 40,
+    height: 40,
+    borderRadius: radii.full,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  kebabText: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    letterSpacing: 2,
+  },
+  menuBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 50,
+  },
+  menuPopover: {
+    position: 'absolute',
+    top: 52,
+    right: 16,
+    zIndex: 51,
+    backgroundColor: colors.surface,
+    borderRadius: radii.md,
+    paddingVertical: spacing.xs,
+    minWidth: 200,
+    ...shadows.lg,
+  },
+  menuItem: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+  },
+  menuItemText: {
+    fontSize: 15,
+    color: colors.text,
+  },
   sceneName: {
     flex: 1,
     textAlign: 'center',
     fontSize: 13,
     color: colors.textSecondary,
   },
-  lineCountPill: {
-    backgroundColor: colors.surfaceAlt,
-    borderRadius: radii.full,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    minWidth: 36,
-    alignItems: 'center',
-  },
-  lineCountPillText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.textSecondary,
-  },
-
   // Mode switcher — small floating pills
   modeSwitcherRow: {
     flexDirection: 'row',
@@ -826,9 +1172,36 @@ const styles = StyleSheet.create({
   },
   lineRowCurrent: {
     marginVertical: 8,
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radii.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
   },
   lineRowDone: {
     opacity: 0.3,
+  },
+  lineRowCue: {
+    borderLeftWidth: 4,
+    borderLeftColor: colors.honey,
+    paddingLeft: 8,
+  },
+  lineRowHidden: {
+    opacity: 0.3,
+  },
+  lineRowFlash: {
+    backgroundColor: colors.roseSoft,
+    borderRadius: radii.sm,
+  },
+  lineRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  lineContent: {
+    flex: 1,
+  },
+  lineMetaRow: {
+    flexDirection: 'row',
+    gap: 6,
   },
 
   // Character names — these carry the visual hierarchy now
@@ -854,9 +1227,35 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5,
   },
   editedIndicator: {
-    fontSize: 10,
+    fontSize: 9,
+    fontWeight: '600',
     color: colors.textSecondary,
-    fontStyle: 'italic',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 2,
+  },
+  skippedIndicator: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: colors.coral,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 2,
+  },
+  lineTextHidden: {
+    textDecorationLine: 'line-through',
+  },
+  bookmarkTouchable: {
+    paddingLeft: 8,
+    paddingTop: 2,
+  },
+  bookmarkFilled: {
+    fontSize: 16,
+    color: colors.honey,
+  },
+  bookmarkOutline: {
+    fontSize: 16,
+    color: colors.border,
   },
 
   // Line text
@@ -890,10 +1289,34 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     alignItems: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: 12,
+  },
+  footerRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  footerNavButton: {
+    width: 36,
+    height: 36,
+    borderRadius: radii.full,
+    backgroundColor: colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    ...shadows.sm,
+  },
+  footerNavText: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: colors.rose,
+    marginTop: -2,
+  },
+  footerNavDisabled: {
+    color: colors.border,
   },
   footerPill: {
-    width: '100%',
+    flex: 1,
     backgroundColor: colors.surface,
     borderRadius: radii.xl,
     paddingHorizontal: 16,
@@ -1042,5 +1465,75 @@ const styles = StyleSheet.create({
     fontSize: 120,
     fontWeight: '800',
     color: colors.rose,
+  },
+
+  // Context menu
+  contextMenu: {
+    position: 'absolute',
+    top: '40%',
+    left: '15%',
+    right: '15%',
+    zIndex: 51,
+    backgroundColor: colors.surface,
+    borderRadius: radii.md,
+    paddingVertical: spacing.xs,
+    ...shadows.lg,
+  },
+
+  // Bookmarks modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(45, 42, 38, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radii.xl,
+    borderTopRightRadius: radii.xl,
+    maxHeight: '60%',
+    paddingBottom: 40,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  modalTitle: {
+    ...typography.heading,
+  },
+  modalClose: {
+    fontSize: 20,
+    color: colors.textSecondary,
+    padding: 4,
+  },
+  emptyBookmarks: {
+    ...typography.caption,
+    textAlign: 'center',
+    paddingVertical: spacing.xxl,
+    fontStyle: 'italic',
+  },
+  bookmarkModalItem: {
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  bookmarkModalChar: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    color: colors.honey,
+    marginBottom: 2,
+  },
+  bookmarkModalText: {
+    fontSize: 14,
+    color: colors.text,
+    fontFamily: 'Georgia',
+    lineHeight: 20,
   },
 });
