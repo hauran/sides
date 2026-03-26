@@ -1,35 +1,16 @@
 import { Router, Request, Response } from "express";
 import multer from "multer";
 import path from "path";
-import fs from "fs";
-import { fileURLToPath } from "url";
 import supabase from "../db/index.js";
 import { authMiddleware } from "../middleware/auth.js";
+import { uploadFile, downloadFile } from "../storage.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const UPLOADS_DIR = path.resolve(__dirname, "../../uploads/recordings");
-
-// Ensure uploads directory exists
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, UPLOADS_DIR);
-  },
-  filename: (_req, file, cb) => {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    const ext = path.extname(file.originalname) || ".m4a";
-    cb(null, `recording-${uniqueSuffix}${ext}`);
-  },
-});
+const BUCKET = "recordings";
 
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
   fileFilter: (_req, file, cb) => {
-    // Accept common audio types
     if (file.mimetype.startsWith("audio/") || file.mimetype === "application/octet-stream") {
       cb(null, true);
     } else {
@@ -81,14 +62,17 @@ router.get("/recordings/:id/audio", authMiddleware, async (req: Request, res: Re
       return;
     }
 
-    // audio_uri is stored as a relative filename inside UPLOADS_DIR
-    const filePath = path.resolve(UPLOADS_DIR, path.basename(data.audio_uri));
-    if (!fs.existsSync(filePath)) {
-      res.status(404).json({ error: "Audio file not found" });
-      return;
-    }
-
-    res.sendFile(filePath);
+    const buf = await downloadFile(BUCKET, data.audio_uri);
+    const ext = path.extname(data.audio_uri).toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      ".m4a": "audio/mp4",
+      ".mp3": "audio/mpeg",
+      ".wav": "audio/wav",
+      ".ogg": "audio/ogg",
+      ".webm": "audio/webm",
+    };
+    res.set({ "Content-Type": mimeTypes[ext] || "audio/mp4" });
+    res.send(buf);
   } catch (err) {
     console.error("Error serving audio:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -106,7 +90,6 @@ router.post("/recordings", authMiddleware, async (req: Request, res: Response) =
       return;
     }
 
-    // Verify line exists
     const { data: line, error: lineErr } = await supabase
       .from("lines")
       .select("id")
@@ -159,23 +142,25 @@ router.post(
         .eq("id", lineId)
         .single();
       if (lineErr || !line) {
-        // Clean up uploaded file
-        fs.unlink(file.path, () => {});
         res.status(404).json({ error: "Line not found" });
         return;
       }
 
-      // Store just the filename — we serve via /api/recordings/:id/audio
-      const audioUri = file.filename;
+      // Upload to Supabase Storage
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      const ext = path.extname(file.originalname) || ".m4a";
+      const filename = `recording-${uniqueSuffix}${ext}`;
+
+      await uploadFile(BUCKET, filename, file.buffer, file.mimetype || "audio/mp4");
 
       const { data, error } = await supabase
         .from("recordings")
-        .insert({ line_id: lineId, recorded_by: userId, audio_uri: audioUri })
+        .insert({ line_id: lineId, recorded_by: userId, audio_uri: filename })
         .select()
         .single();
       if (error) throw error;
 
-      console.log(`[recording] Uploaded ${file.filename} (${(file.size / 1024).toFixed(0)} KB) for line ${lineId}`);
+      console.log(`[recording] Uploaded ${filename} (${(file.size / 1024).toFixed(0)} KB) for line ${lineId}`);
 
       res.status(201).json(data);
     } catch (err) {

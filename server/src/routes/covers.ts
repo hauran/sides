@@ -1,21 +1,11 @@
 import { Router, Request, Response } from "express";
 import multer from "multer";
-import path from "path";
-import fs from "fs";
-import { fileURLToPath } from "url";
 import sharp from "sharp";
 import supabase from "../db/index.js";
 import { authMiddleware } from "../middleware/auth.js";
+import { uploadFile, downloadFile, deleteFiles, fileExists, publicUrl } from "../storage.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const COVERS_DIR = path.join(__dirname, "../../uploads/covers");
-
-// Ensure uploads/covers directory exists
-if (!fs.existsSync(COVERS_DIR)) {
-  fs.mkdirSync(COVERS_DIR, { recursive: true });
-}
-
+const BUCKET = "covers";
 const CARD_WIDTH = 800;
 const CARD_HEIGHT = 450; // 16:9 aspect ratio
 
@@ -30,22 +20,19 @@ function normalizeTitle(raw: string): string {
     .split(" ")
     .map((w, i) => {
       const lower = w.toLowerCase();
-      // Always capitalize first word, keep small words lowercase
       if (i > 0 && SMALL_WORDS.has(lower)) return lower;
       return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
     })
     .join(" ");
 }
 
-/** Fetch an image and validate it's a usable photo (not a logo/icon).
- *  Returns the downloaded buffer if usable, or null if not. */
+/** Fetch an image and validate it's a usable photo (not a logo/icon). */
 async function fetchAndValidateImage(url: string): Promise<Buffer | null> {
   try {
     const res = await fetch(url);
     if (!res.ok) return null;
     const buf = Buffer.from(await res.arrayBuffer());
     const meta = await sharp(buf).metadata();
-    // Reject: PNGs with alpha (logos), tiny images, SVGs
     if (meta.format === "png" && meta.hasAlpha) return null;
     if (meta.format === "svg") return null;
     if ((meta.width ?? 0) < 400 || (meta.height ?? 0) < 300) return null;
@@ -75,7 +62,6 @@ async function searchCommons(title: string): Promise<string | null> {
   const results = data?.query?.search ?? [];
 
   for (const result of results) {
-    // Get image info for this file
     const infoUrl = `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(result.title)}&prop=imageinfo&iiprop=url|size|mime&format=json`;
     const infoRes = await fetch(infoUrl);
     if (!infoRes.ok) continue;
@@ -84,7 +70,6 @@ async function searchCommons(title: string): Promise<string | null> {
     for (const page of Object.values(infoData.query.pages) as any[]) {
       const ii = page?.imageinfo?.[0];
       if (!ii) continue;
-      // Only JPEGs, reasonably large
       if (ii.mime !== "image/jpeg") continue;
       if (ii.width < 600 || ii.height < 400) continue;
       return ii.url;
@@ -93,8 +78,7 @@ async function searchCommons(title: string): Promise<string | null> {
   return null;
 }
 
-/** Fetch the best image URL and its pre-downloaded buffer.
- *  Tries Wikipedia first, falls back to Commons. */
+/** Fetch the best image URL and its pre-downloaded buffer. */
 async function findImage(title: string): Promise<{ url: string; buffer: Buffer } | null> {
   const normalized = normalizeTitle(title);
   const queries = [
@@ -103,7 +87,6 @@ async function findImage(title: string): Promise<{ url: string; buffer: Buffer }
     `${normalized} (musical)`,
   ];
 
-  // Try Wikipedia page summaries first
   for (const query of queries) {
     const url = await tryWikipedia(query);
     if (url) {
@@ -112,7 +95,6 @@ async function findImage(title: string): Promise<{ url: string; buffer: Buffer }
     }
   }
 
-  // Fall back to Wikimedia Commons search
   console.log(`[Covers] Wikipedia had no usable image for "${title}", searching Commons...`);
   const commonsUrl = await searchCommons(normalized);
   if (commonsUrl) {
@@ -123,6 +105,16 @@ async function findImage(title: string): Promise<{ url: string; buffer: Buffer }
   return null;
 }
 
+/** Smart-crop a buffer to card dimensions and return the JPEG buffer. */
+async function cropToCard(input: Buffer | Uint8Array, options?: { left: number; top: number; width: number; height: number }): Promise<Buffer> {
+  let pipeline = sharp(input);
+  if (options) pipeline = pipeline.extract(options);
+  return pipeline
+    .resize(CARD_WIDTH, CARD_HEIGHT, { fit: "cover", position: sharp.strategy.attention })
+    .jpeg({ quality: 85 })
+    .toBuffer();
+}
+
 const router = Router();
 
 // POST /api/covers/:playId — generate a smart-cropped cover for a play
@@ -130,14 +122,11 @@ router.post("/:playId", authMiddleware, async (req: Request, res: Response) => {
   const { playId } = req.params;
 
   try {
-    // Check if cover already exists on disk
-    const jpgPath = path.join(COVERS_DIR, `${playId}.jpg`);
-    if (fs.existsSync(jpgPath)) {
+    if (await fileExists(BUCKET, `${playId}.jpg`)) {
       res.json({ cover_uri: `/api/covers/${playId}/image` });
       return;
     }
 
-    // Get play title and status
     const { data: play, error: playErr } = await supabase
       .from("plays")
       .select("title, status")
@@ -149,39 +138,29 @@ router.post("/:playId", authMiddleware, async (req: Request, res: Response) => {
       return;
     }
 
-    // Don't generate/cache a cover while still processing — title may change
     if (play.status === "processing") {
       res.status(202).json({ pending: true });
       return;
     }
 
-    // Find a usable image (Wikipedia → Commons fallback)
     const found = await findImage(play.title);
 
     if (found) {
-      // Save source image for later re-cropping
-      const srcPath = path.join(COVERS_DIR, `${playId}_src.jpg`);
-      await sharp(found.buffer).jpeg({ quality: 90 }).toFile(srcPath);
-      // Smart crop — 'attention' strategy finds the focal point
-      await sharp(found.buffer)
-        .resize(CARD_WIDTH, CARD_HEIGHT, {
-          fit: "cover",
-          position: sharp.strategy.attention,
-        })
-        .jpeg({ quality: 85 })
-        .toFile(jpgPath);
+      const srcBuf = await sharp(found.buffer).jpeg({ quality: 90 }).toBuffer();
+      await uploadFile(BUCKET, `${playId}_src.jpg`, srcBuf, "image/jpeg");
+      const cardBuf = await cropToCard(found.buffer);
+      await uploadFile(BUCKET, `${playId}.jpg`, cardBuf, "image/jpeg");
     }
 
-    // If no image was saved, generate a styled typographic cover
-    if (!fs.existsSync(jpgPath)) {
-      // Pick a gradient based on title hash for variety
+    if (!(await fileExists(BUCKET, `${playId}.jpg`))) {
+      // Generate typographic gradient cover
       const hash = play.title.split("").reduce((a: number, c: string) => a + c.charCodeAt(0), 0);
       const gradients = [
-        ["#C4727F", "#8B6B7A"],  // rose
-        ["#8B9D83", "#6B7D63"],  // sage
-        ["#C49872", "#8B7360"],  // warm tan
-        ["#7B8FA1", "#5B6F81"],  // steel blue
-        ["#A1887F", "#7B6560"],  // mocha
+        ["#C4727F", "#8B6B7A"],
+        ["#8B9D83", "#6B7D63"],
+        ["#C49872", "#8B7360"],
+        ["#7B8FA1", "#5B6F81"],
+        ["#A1887F", "#7B6560"],
       ];
       const [c1, c2] = gradients[hash % gradients.length];
       const escapedTitle = play.title.replace(/&/g, "&amp;").replace(/</g, "&lt;");
@@ -195,14 +174,12 @@ router.post("/:playId", authMiddleware, async (req: Request, res: Response) => {
         <rect width="100%" height="100%" fill="url(#g)"/>
         <text x="60" y="${CARD_HEIGHT - 60}" font-family="Georgia, serif" font-size="64" font-weight="bold" fill="rgba(255,255,255,0.15)" letter-spacing="4">${escapedTitle.toUpperCase()}</text>
       </svg>`;
-      await sharp(Buffer.from(svg))
-        .jpeg({ quality: 85 })
-        .toFile(jpgPath);
+      const cardBuf = await sharp(Buffer.from(svg)).jpeg({ quality: 85 }).toBuffer();
+      await uploadFile(BUCKET, `${playId}.jpg`, cardBuf, "image/jpeg");
     }
 
-    console.log(`Cover generated for play ${playId}: ${jpgPath}`);
+    console.log(`Cover generated for play ${playId}`);
 
-    // Update play record with cover_uri
     await supabase
       .from("plays")
       .update({ cover_uri: `/api/covers/${playId}/image` })
@@ -216,20 +193,19 @@ router.post("/:playId", authMiddleware, async (req: Request, res: Response) => {
 });
 
 // GET /api/covers/:playId/image — serve the cover image
-router.get("/:playId/image", (req: Request, res: Response) => {
+router.get("/:playId/image", async (req: Request, res: Response) => {
   const { playId } = req.params;
-  const jpgPath = path.join(COVERS_DIR, `${playId}.jpg`);
 
-  if (!fs.existsSync(jpgPath)) {
+  try {
+    const buf = await downloadFile(BUCKET, `${playId}.jpg`);
+    res.set({
+      "Content-Type": "image/jpeg",
+      "Cache-Control": "public, max-age=86400",
+    });
+    res.send(buf);
+  } catch {
     res.status(404).json({ error: "Cover not found" });
-    return;
   }
-
-  res.set({
-    "Content-Type": "image/jpeg",
-    "Cache-Control": "public, max-age=86400",
-  });
-  fs.createReadStream(jpgPath).pipe(res);
 });
 
 // POST /api/covers/:playId/upload — upload a custom cover image
@@ -256,20 +232,11 @@ router.post("/:playId/upload", authMiddleware, (req: Request, res: Response, nex
   }
 
   try {
-    const jpgPath = path.join(COVERS_DIR, `${playId}.jpg`);
-    const srcPath = path.join(COVERS_DIR, `${playId}_src.jpg`);
+    const srcBuf = await sharp(file.buffer).jpeg({ quality: 90 }).toBuffer();
+    await uploadFile(BUCKET, `${playId}_src.jpg`, srcBuf, "image/jpeg");
 
-    // Save source for re-cropping
-    await sharp(file.buffer).jpeg({ quality: 90 }).toFile(srcPath);
-
-    // Smart crop from square to 16:9 card dimensions
-    await sharp(file.buffer)
-      .resize(CARD_WIDTH, CARD_HEIGHT, {
-        fit: "cover",
-        position: sharp.strategy.attention,
-      })
-      .jpeg({ quality: 85 })
-      .toFile(jpgPath);
+    const cardBuf = await cropToCard(file.buffer);
+    await uploadFile(BUCKET, `${playId}.jpg`, cardBuf, "image/jpeg");
 
     const coverUri = `/api/covers/${playId}/image`;
     await supabase
@@ -288,67 +255,55 @@ router.post("/:playId/upload", authMiddleware, (req: Request, res: Response, nex
 // DELETE /api/covers/:playId — delete cached cover + source so it regenerates
 router.delete("/:playId", authMiddleware, async (req: Request, res: Response) => {
   const { playId } = req.params;
-  const jpgPath = path.join(COVERS_DIR, `${playId}.jpg`);
-  const srcPath = path.join(COVERS_DIR, `${playId}_src.jpg`);
-  if (fs.existsSync(jpgPath)) fs.unlinkSync(jpgPath);
-  if (fs.existsSync(srcPath)) fs.unlinkSync(srcPath);
+  await deleteFiles(BUCKET, [`${playId}.jpg`, `${playId}_src.jpg`]);
   res.json({ ok: true });
 });
 
 // GET /api/covers/:playId/source — serve the full source image for cropping UI
-router.get("/:playId/source", authMiddleware, (req: Request, res: Response) => {
+router.get("/:playId/source", authMiddleware, async (req: Request, res: Response) => {
   const { playId } = req.params;
-  const srcPath = path.join(COVERS_DIR, `${playId}_src.jpg`);
-
-  if (!fs.existsSync(srcPath)) {
+  try {
+    const buf = await downloadFile(BUCKET, `${playId}_src.jpg`);
+    res.set({ "Content-Type": "image/jpeg" });
+    res.send(buf);
+  } catch {
     res.status(404).json({ error: "Source image not found" });
-    return;
   }
-
-  res.set({ "Content-Type": "image/jpeg" });
-  fs.createReadStream(srcPath).pipe(res);
 });
 
 // PATCH /api/covers/:playId/crop — re-crop the cover from source using pan/zoom params
-// Body: { x: number, y: number, zoom: number }
-//   x, y are the top-left offset as fractions (0-1) of the zoomed source
-//   zoom is the scale factor (1 = fit, >1 = zoomed in)
 router.patch("/:playId/crop", authMiddleware, async (req: Request, res: Response) => {
   const { playId } = req.params;
   const { x = 0, y = 0, zoom = 1 } = req.body as { x?: number; y?: number; zoom?: number };
 
-  const srcPath = path.join(COVERS_DIR, `${playId}_src.jpg`);
-  const jpgPath = path.join(COVERS_DIR, `${playId}.jpg`);
-  // Fall back to cropped image if no source exists
-  const imagePath = fs.existsSync(srcPath) ? srcPath : jpgPath;
-  if (!fs.existsSync(imagePath)) {
-    res.status(404).json({ error: "No cover image found" });
-    return;
-  }
-
   try {
-    const meta = await sharp(imagePath).metadata();
+    // Try source first, fall back to cropped
+    let srcBuf: Buffer;
+    try {
+      srcBuf = await downloadFile(BUCKET, `${playId}_src.jpg`);
+    } catch {
+      try {
+        srcBuf = await downloadFile(BUCKET, `${playId}.jpg`);
+      } catch {
+        res.status(404).json({ error: "No cover image found" });
+        return;
+      }
+    }
+
+    const meta = await sharp(srcBuf).metadata();
     const srcW = meta.width!;
     const srcH = meta.height!;
 
-    // The visible region at the given zoom level
     const viewW = srcW / zoom;
     const viewH = srcH / zoom;
 
-    // Clamp extract region to source bounds
     const left = Math.round(Math.max(0, Math.min(x * srcW, srcW - viewW)));
     const top = Math.round(Math.max(0, Math.min(y * srcH, srcH - viewH)));
     const width = Math.round(Math.min(viewW, srcW - left));
     const height = Math.round(Math.min(viewH, srcH - top));
 
-    const outPath = path.join(COVERS_DIR, `${playId}.jpg`);
-    const tmpPath = path.join(COVERS_DIR, `${playId}_tmp.jpg`);
-    await sharp(imagePath)
-      .extract({ left, top, width, height })
-      .resize(CARD_WIDTH, CARD_HEIGHT, { fit: "cover" })
-      .jpeg({ quality: 85 })
-      .toFile(tmpPath);
-    fs.renameSync(tmpPath, outPath);
+    const cardBuf = await cropToCard(srcBuf, { left, top, width, height });
+    await uploadFile(BUCKET, `${playId}.jpg`, cardBuf, "image/jpeg");
 
     res.json({ cover_uri: `/api/covers/${playId}/image` });
   } catch (err) {

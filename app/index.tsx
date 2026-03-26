@@ -12,7 +12,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { usePlayStore } from '../src/store/usePlayStore';
 import { useUserStore } from '../src/store/useUserStore';
-import { DEV_USER_ID, setDevUserId } from '../src/lib/api';
+import { useIsAuthenticated } from '../src/store/useAuthStore';
 import { colors, spacing, radii, shadows } from '../src/lib/theme';
 import { useCoverImage } from '../src/hooks/useCoverImage';
 
@@ -72,10 +72,13 @@ export default function HomeScreen() {
   const fetchCurrentUser = useUserStore((s) => s.fetchCurrentUser);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const isAuthenticated = useIsAuthenticated();
+
   useEffect(() => {
-    setDevUserId(DEV_USER_ID);
-    fetchCurrentUser();
-  }, []);
+    if (isAuthenticated) {
+      fetchCurrentUser();
+    }
+  }, [isAuthenticated]);
 
   // Re-fetch when screen is focused (e.g. after uploading)
   useFocusEffect(

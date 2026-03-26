@@ -13,6 +13,7 @@ import uploadRoutes from "./routes/upload.js";
 import coversRoutes from "./routes/covers.js";
 import bookmarksRoutes from "./routes/bookmarks.js";
 import searchRoutes from "./routes/search.js";
+import inviteRoutes from "./routes/invites.js";
 
 const app = express();
 
@@ -38,6 +39,7 @@ app.use("/api/plays", uploadRoutes);
 app.use("/api/covers", coversRoutes);
 app.use("/api", bookmarksRoutes);  // /api/bookmarks and /api/plays/:playId/bookmarks
 app.use("/api", searchRoutes);     // /api/plays/:playId/search
+app.use("/api", inviteRoutes);     // /api/plays/:playId/invite, /api/invites/:token
 
 // 404 handler
 app.use((_req, res) => {

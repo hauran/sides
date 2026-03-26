@@ -6,10 +6,26 @@ export const API_URL = __DEV__
 
 export const DEV_USER_ID = 'a9dfc43f-eb47-4822-8348-62b5e77af5a5';
 
-export let devUserId: string | null = null;
+// Auth token set after login, or dev user ID for development
+let authToken: string | null = null;
+let devUserId: string | null = null;
+
+export function setAuthToken(token: string | null) {
+  authToken = token;
+}
 
 export function setDevUserId(id: string) {
   devUserId = id;
+}
+
+export function getAuthHeaders(): Record<string, string> {
+  if (authToken) {
+    return { Authorization: `Bearer ${authToken}` };
+  }
+  if (__DEV__ && devUserId) {
+    return { 'x-dev-user-id': devUserId };
+  }
+  return {};
 }
 
 export async function uploadRecording(lineId: string, fileUri: string): Promise<Recording> {
@@ -21,15 +37,10 @@ export async function uploadRecording(lineId: string, fileUri: string): Promise<
     name: 'recording.m4a',
   } as any);
 
-  const headers: Record<string, string> = {};
-  if (__DEV__ && devUserId) {
-    headers['x-dev-user-id'] = devUserId;
-  }
-
   const res = await fetch(`${API_URL}/recordings/upload`, {
     method: 'POST',
     body: formData,
-    headers,
+    headers: getAuthHeaders(),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -45,12 +56,9 @@ export async function api<T = unknown>(
   const isFormData = options.body instanceof FormData;
   const headers: Record<string, string> = {
     ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+    ...getAuthHeaders(),
     ...(options.headers as Record<string, string>),
   };
-
-  if (__DEV__ && devUserId) {
-    headers['x-dev-user-id'] = devUserId;
-  }
 
   const res = await fetch(`${API_URL}${path}`, {
     ...options,

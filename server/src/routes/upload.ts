@@ -1,17 +1,11 @@
 import { Router, Request, Response } from "express";
 import multer from "multer";
-import path from "path";
-import fs from "fs";
-import { fileURLToPath } from "url";
 import Anthropic from "@anthropic-ai/sdk";
 import sharp from "sharp";
 import * as mupdf from "mupdf";
 import supabase from "../db/index.js";
 import { authMiddleware } from "../middleware/auth.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const COVERS_DIR = path.join(__dirname, "../../uploads/covers");
+import { uploadFile, fileExists } from "../storage.js";
 
 const router = Router();
 
@@ -59,7 +53,7 @@ Rules:
 - Stage directions have character: null and type: "stage_direction"
 - Dialogue has the character name and type: "dialogue"
 - When a line is spoken/sung by MULTIPLE characters (e.g. "BAKER & BAKER'S WIFE:" or "BOTH:"), set "characters" to an array of ALL speaker names and "character" to the first one
-- IMPORTANT: Stage directions that appear between a character name and their line (like "(Sung, to CINDERELLA)") must be placed BEFORE the dialogue line in the output array, not after. The order should be: character's stage direction first, then the character's spoken/sung line.
+- IMPORTANT: Short parenthetical directions that appear between a character name and their line — like "(Spoken, overlapping)", "(Sung)", "(to CINDERELLA)", "(sarcastically)" — are delivery instructions, NOT standalone stage directions. Merge them into the dialogue line's text by prepending them, e.g. text: "(Spoken, overlapping) What, you, Cinderella...". Do NOT create separate stage_direction entries for these. Only use type "stage_direction" for standalone directions that are NOT attached to a specific character's line (e.g. scene-level blocking, lighting cues, entrances/exits).
 - Look carefully for scene breaks — they often appear as bold headers, numbered sections (e.g. "#2 – Act I Opening, Part 2"), horizontal rules, or distinct visual separators like black banners. When you see one, start a new scene with its name.
 - If no scene break is visible in these pages, use a single scene named "Continued"
 - Preserve the original text exactly as written
@@ -181,11 +175,7 @@ async function parseScriptPdf(pdfBuffer: Buffer): Promise<ParsedScript> {
 
 async function generateCoverFromPdf(playId: string, pdfBuffer: Buffer) {
   try {
-    if (!fs.existsSync(COVERS_DIR)) {
-      fs.mkdirSync(COVERS_DIR, { recursive: true });
-    }
-    const jpgPath = path.join(COVERS_DIR, `${playId}.jpg`);
-    if (fs.existsSync(jpgPath)) return; // Already generated
+    if (await fileExists("covers", `${playId}.jpg`)) return; // Already generated
 
     // Render first page of PDF to a pixmap
     const doc = mupdf.Document.openDocument(pdfBuffer, "application/pdf");
@@ -212,15 +202,17 @@ async function generateCoverFromPdf(playId: string, pdfBuffer: Buffer) {
     }
 
     // Save source for re-cropping, then smart crop to card dimensions
-    const srcPath = path.join(COVERS_DIR, `${playId}_src.jpg`);
-    await sharp(pngBuffer).jpeg({ quality: 90 }).toFile(srcPath);
-    await sharp(pngBuffer)
+    const srcBuf = await sharp(pngBuffer).jpeg({ quality: 90 }).toBuffer();
+    await uploadFile("covers", `${playId}_src.jpg`, srcBuf, "image/jpeg");
+
+    const cardBuf = await sharp(pngBuffer)
       .resize(800, 450, {
         fit: "cover",
         position: sharp.strategy.attention,
       })
       .jpeg({ quality: 85 })
-      .toFile(jpgPath);
+      .toBuffer();
+    await uploadFile("covers", `${playId}.jpg`, cardBuf, "image/jpeg");
 
     // Update play record
     await supabase
@@ -292,8 +284,8 @@ async function processPlayInBackground(playId: string, pdfBuffer: Buffer, userTi
       if (cleanTitle && cleanTitle !== userTitle) {
         await supabase.from("plays").update({ title: cleanTitle }).eq("id", playId);
         // Delete stale cover so it regenerates with the clean title
-        const staleCover = path.join(COVERS_DIR, `${playId}.jpg`);
-        if (fs.existsSync(staleCover)) fs.unlinkSync(staleCover);
+        const { deleteFiles } = await import("../storage.js");
+        await deleteFiles("covers", [`${playId}.jpg`, `${playId}_src.jpg`]);
         console.log(`[bg:${playId}] Resolved title: "${cleanTitle}"`);
       }
     } catch (err) {

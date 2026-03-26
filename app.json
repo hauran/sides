@@ -15,6 +15,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.sides.app",
+      "associatedDomains": ["applinks:sides.app"],
       "infoPlist": {
         "NSSpeechRecognitionUsageDescription": "Sides needs speech recognition to auto-advance when you speak your lines.",
         "NSMicrophoneUsageDescription": "Sides needs microphone access to listen while you rehearse your lines.",

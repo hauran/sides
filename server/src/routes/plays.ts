@@ -158,10 +158,10 @@ router.post("/:id/assign", authMiddleware, async (req: Request, res: Response) =
       return;
     }
 
-    // Upsert assignment (character can only be assigned to one person)
+    // Insert assignment (multiple users can play the same role)
     const { data, error } = await supabase
       .from("character_assignments")
-      .upsert({ character_id, user_id: userId }, { onConflict: "character_id" })
+      .upsert({ character_id, user_id: userId }, { onConflict: "character_id,user_id" })
       .select()
       .single();
 

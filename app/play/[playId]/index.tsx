@@ -11,6 +11,8 @@ import {
   ActivityIndicator,
   FlatList,
   TextInput,
+  Modal,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
@@ -19,6 +21,7 @@ import { useUserStore } from '../../../src/store/useUserStore';
 import { useBookmarkStore } from '../../../src/store/useBookmarkStore';
 import { api } from '../../../src/lib/api';
 import { colors, spacing, radii, typography, shadows } from '../../../src/lib/theme';
+import { getInitials } from '../../../src/lib/utils';
 
 interface PlayDetail {
   id: string;
@@ -39,15 +42,6 @@ interface PlayDetail {
   }[];
 }
 
-function getInitials(name: string): string {
-  return name
-    .split(' ')
-    .map((w) => w[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2);
-}
-
 export default function PlayDetailScreen() {
   const { playId } = useLocalSearchParams<{ playId: string }>();
   const router = useRouter();
@@ -60,6 +54,39 @@ export default function PlayDetailScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<{ id: string; text: string; scene_id: string; scene_name: string; character_name: string }[]>([]);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [inviteModalVisible, setInviteModalVisible] = useState(false);
+  const [inviteCharacterId, setInviteCharacterId] = useState<string | null>(null);
+  const [inviteCharacterName, setInviteCharacterName] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteSending, setInviteSending] = useState(false);
+
+  function openInviteModal(characterId: string, characterName: string) {
+    setInviteCharacterId(characterId);
+    setInviteCharacterName(characterName);
+    setInviteEmail('');
+    setInviteModalVisible(true);
+  }
+
+  const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const inviteEmailValid = isValidEmail(inviteEmail);
+
+  async function sendInvite() {
+    if (!playId || !inviteCharacterId || !inviteEmailValid) return;
+    const email = inviteEmail.trim().toLowerCase();
+    setInviteSending(true);
+    try {
+      await api(`/plays/${playId}/invite`, {
+        method: 'POST',
+        body: JSON.stringify({ email, character_id: inviteCharacterId }),
+      });
+      setInviteModalVisible(false);
+      Alert.alert('Invite sent!', `${email} will receive an email to join as ${inviteCharacterName}.`);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to send invite');
+    } finally {
+      setInviteSending(false);
+    }
+  }
 
   function handleSearchChange(text: string) {
     setSearchQuery(text);
@@ -113,7 +140,7 @@ export default function PlayDetailScreen() {
             if (index === 1) doUnassign(characterId);
           } else {
             if (index === 0) doAssign(characterId);
-            if (index === 1) Alert.alert('Coming soon', 'Invite links will be available in a future update.');
+            if (index === 1) openInviteModal(characterId, characterName);
             if (index === 2) Alert.alert('Coming soon', 'Voice selection will be available in a future update.');
           }
         }
@@ -127,7 +154,7 @@ export default function PlayDetailScreen() {
             ]
           : [
               { text: "I'll play this role", onPress: () => doAssign(characterId) },
-              { text: 'Invite someone', onPress: () => Alert.alert('Coming soon', 'Invite links will be available in a future update.') },
+              { text: 'Invite someone', onPress: () => openInviteModal(characterId, characterName) },
               { text: 'Change voice', onPress: () => Alert.alert('Coming soon', 'Voice selection will be available in a future update.') },
             ]),
         { text: 'Cancel', style: 'cancel' as const },
@@ -138,11 +165,13 @@ export default function PlayDetailScreen() {
   function doUnassign(characterId: string) {
     if (!playId || !detail) return;
 
-    // Optimistic: remove assignment immediately
+    // Optimistic: remove only MY assignment for this character
     const prev = detail;
     setDetail({
       ...detail,
-      assignments: detail.assignments.filter((a) => a.character_id !== characterId),
+      assignments: detail.assignments.filter(
+        (a) => !(a.character_id === characterId && a.user_id === currentUser?.id)
+      ),
     });
 
     // Fire API in background, revert on failure
@@ -155,7 +184,13 @@ export default function PlayDetailScreen() {
   function doAssign(characterId: string) {
     if (!playId || !detail || !currentUser) return;
 
-    // Optimistic: add assignment immediately
+    // Don't double-assign
+    const alreadyAssigned = detail.assignments.some(
+      (a) => a.character_id === characterId && a.user_id === currentUser.id
+    );
+    if (alreadyAssigned) return;
+
+    // Optimistic: add assignment (keep existing ones for other users)
     const prev = detail;
     const newAssignment = {
       character_id: characterId,
@@ -165,10 +200,7 @@ export default function PlayDetailScreen() {
     };
     setDetail({
       ...detail,
-      assignments: [
-        ...detail.assignments.filter((a) => a.character_id !== characterId),
-        newAssignment,
-      ],
+      assignments: [...detail.assignments, newAssignment],
     });
 
     // Fire API in background, revert on failure
@@ -226,9 +258,13 @@ export default function PlayDetailScreen() {
   const scenes = detail.scenes;
   const assignments = detail.assignments;
 
-  const assignmentByCharacter = new Map(
-    assignments.map((a) => [a.character_id, a])
-  );
+  // A character can have multiple assignees (multiple casts)
+  const assignmentsByCharacter = new Map<string, typeof assignments>();
+  for (const a of assignments) {
+    const list = assignmentsByCharacter.get(a.character_id);
+    if (list) list.push(a);
+    else assignmentsByCharacter.set(a.character_id, [a]);
+  }
 
   // User can play multiple characters
   const myCharacterIds = assignments
@@ -299,9 +335,9 @@ export default function PlayDetailScreen() {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.castRow}
             renderItem={({ item: c }) => {
-              const assignment = assignmentByCharacter.get(c.id);
-              const isMe = assignment?.user_id === currentUser?.id;
-              const isAssigned = !!assignment;
+              const charAssignments = assignmentsByCharacter.get(c.id) ?? [];
+              const isMe = charAssignments.some((a) => a.user_id === currentUser?.id);
+              const others = charAssignments.filter((a) => a.user_id !== currentUser?.id);
 
               return (
                 <Pressable
@@ -310,13 +346,27 @@ export default function PlayDetailScreen() {
                     isMe && styles.characterCardMine,
                   ]}
                   onPress={() => showCharacterMenu(c.id, c.name, isMe)}
-                                 >
-                  {/* Avatar */}
-                  {isAssigned ? (
-                    <View style={[styles.avatar, isMe && styles.avatarMine]}>
-                      <Text style={styles.avatarText}>
-                        {getInitials(isMe ? (currentUser?.name ?? 'ME') : assignment.user_name)}
-                      </Text>
+                >
+                  {/* Avatar(s) */}
+                  {charAssignments.length > 0 ? (
+                    <View style={styles.avatarStack}>
+                      {charAssignments.slice(0, 3).map((a, i) => {
+                        const isSelf = a.user_id === currentUser?.id;
+                        return (
+                          <View
+                            key={a.user_id}
+                            style={[
+                              styles.avatar,
+                              isSelf && styles.avatarMine,
+                              i > 0 && { marginLeft: -12 },
+                            ]}
+                          >
+                            <Text style={styles.avatarText}>
+                              {getInitials(isSelf ? (currentUser?.name ?? 'ME') : a.user_name)}
+                            </Text>
+                          </View>
+                        );
+                      })}
                     </View>
                   ) : (
                     <View style={styles.avatarUnassigned}>
@@ -330,41 +380,23 @@ export default function PlayDetailScreen() {
                   </Text>
 
                   {/* Status */}
-                  {isMe ? (
+                  {charAssignments.length === 0 ? (
+                    <Text style={styles.statusOpen}>Open</Text>
+                  ) : isMe && others.length === 0 ? (
                     <Text style={styles.statusMe}>You</Text>
-                  ) : isAssigned ? (
-                    <Text style={styles.statusAssigned} numberOfLines={1}>
-                      {assignment.user_name}
+                  ) : isMe ? (
+                    <Text style={styles.statusMe} numberOfLines={1}>
+                      You +{others.length}
                     </Text>
                   ) : (
-                    <Text style={styles.statusOpen}>Open</Text>
+                    <Text style={styles.statusAssigned} numberOfLines={1}>
+                      {charAssignments.map((a) => a.user_name).join(', ')}
+                    </Text>
                   )}
                 </Pressable>
               );
             }}
           />
-        )}
-
-        {/* Scenes section */}
-        <Text style={[styles.sectionLabel, styles.scenesLabel]}>SCENES</Text>
-        {scenes.length === 0 ? (
-          <Text style={styles.emptyText}>No scenes parsed yet</Text>
-        ) : (
-          <View style={styles.scenesList}>
-            {scenes.map((scene) => (
-              <Pressable
-                key={scene.id}
-                style={({ pressed }) => [
-                  styles.sceneCard,
-                  pressed && styles.sceneCardPressed,
-                ]}
-                onPress={() => router.push(`/rehearse/${scene.id}?characterIds=${myCharacterIds.join(',')}`)}
-                             >
-                <Text style={styles.sceneName}>{scene.name}</Text>
-                <Text style={styles.sceneChevron}>{'\u203A'}</Text>
-              </Pressable>
-            ))}
-          </View>
         )}
 
         {/* Bookmarks section */}
@@ -397,11 +429,83 @@ export default function PlayDetailScreen() {
           );
         })()}
 
+        {/* Scenes section */}
+        <Text style={[styles.sectionLabel, styles.scenesLabel]}>SCENES</Text>
+        {scenes.length === 0 ? (
+          <Text style={styles.emptyText}>No scenes parsed yet</Text>
+        ) : (
+          <View style={styles.scenesList}>
+            {scenes.map((scene) => (
+              <Pressable
+                key={scene.id}
+                style={({ pressed }) => [
+                  styles.sceneCard,
+                  pressed && styles.sceneCardPressed,
+                ]}
+                onPress={() => router.push(`/rehearse/${scene.id}?characterIds=${myCharacterIds.join(',')}`)}
+                             >
+                <Text style={styles.sceneName}>{scene.name}</Text>
+                <Text style={styles.sceneChevron}>{'\u203A'}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+
         {/* Leave play */}
         <Pressable style={styles.leaveButton} onPress={handleLeavePlay}>
           <Text style={styles.leaveButtonText}>Leave Play</Text>
         </Pressable>
       </ScrollView>
+
+      {/* Invite modal */}
+      <Modal
+        visible={inviteModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setInviteModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Invite to play {inviteCharacterName}</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Email address"
+              placeholderTextColor={colors.textSecondary}
+              value={inviteEmail}
+              onChangeText={setInviteEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus
+              returnKeyType="send"
+              onSubmitEditing={sendInvite}
+              editable={!inviteSending}
+            />
+            <View style={styles.modalButtons}>
+              <Pressable
+                style={styles.modalCancel}
+                onPress={() => setInviteModalVisible(false)}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modalSend, (!inviteEmailValid || inviteSending) && { opacity: 0.6 }]}
+                onPress={sendInvite}
+                disabled={!inviteEmailValid || inviteSending}
+              >
+                {inviteSending ? (
+                  <ActivityIndicator color={colors.textInverse} size="small" />
+                ) : (
+                  <Text style={styles.modalSendText}>Send invite</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -474,6 +578,11 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: colors.rose,
   },
+  avatarStack: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginBottom: spacing.sm,
+  },
   avatar: {
     width: 48,
     height: 48,
@@ -482,6 +591,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: spacing.sm,
+    borderWidth: 2,
+    borderColor: colors.surface,
   },
   avatarMine: {
     backgroundColor: colors.rose,
@@ -575,6 +686,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.full,
     paddingHorizontal: spacing.lg,
     fontSize: 15,
+    letterSpacing: 0,
     color: colors.text,
     marginBottom: spacing.lg,
   },
@@ -652,5 +764,66 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '500',
     color: colors.coral,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xxl,
+  },
+  modalCard: {
+    width: '100%',
+    backgroundColor: colors.surface,
+    borderRadius: radii.xl,
+    padding: spacing.xxl,
+    ...shadows.lg,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: spacing.lg,
+  },
+  modalInput: {
+    height: 48,
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radii.lg,
+    paddingHorizontal: spacing.lg,
+    fontSize: 16,
+    color: colors.text,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: spacing.xl,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  modalCancel: {
+    flex: 1,
+    height: 44,
+    borderRadius: radii.lg,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.surfaceAlt,
+  },
+  modalCancelText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  modalSend: {
+    flex: 1,
+    height: 44,
+    borderRadius: radii.lg,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.rose,
+  },
+  modalSendText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.textInverse,
   },
 });

@@ -17,7 +17,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { colors, spacing, radii, shadows } from '../lib/theme';
-import { api, API_URL, devUserId } from '../lib/api';
+import { api, API_URL, getAuthHeaders } from '../lib/api';
 import type { Play } from '../types';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
@@ -185,8 +185,7 @@ export function PlayEditor({ play, coverUrl, onClose, onSaved }: PlayEditorProps
           name: 'cover.jpg',
         } as any);
 
-        const headers: Record<string, string> = {};
-        if (__DEV__ && devUserId) headers['x-dev-user-id'] = devUserId;
+        const headers: Record<string, string> = getAuthHeaders();
         const res = await fetch(`${API_URL}/covers/${play.id}/upload`, {
           method: 'POST',
           body: formData,

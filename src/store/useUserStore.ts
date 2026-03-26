@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { User } from '../types';
-import { api, setDevUserId } from '../lib/api';
+import { api } from '../lib/api';
 
 interface UserState {
   currentUser: User | null;
@@ -53,6 +53,5 @@ export const useUserStore = create<UserState>((set, get) => ({
   fetchCurrentUser: async () => {
     const user = await api<User>('/users/me');
     set({ currentUser: user });
-    setDevUserId(user.id);
   },
 }));
