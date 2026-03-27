@@ -13,6 +13,7 @@ import {
   TextInput,
   Modal,
   KeyboardAvoidingView,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
@@ -22,6 +23,7 @@ import { useBookmarkStore } from '../../../src/store/useBookmarkStore';
 import { api } from '../../../src/lib/api';
 import { colors, spacing, radii, typography, shadows } from '../../../src/lib/theme';
 import { getInitials } from '../../../src/lib/utils';
+import { resolveAvatarUrl } from '../../../src/lib/avatar';
 
 interface PlayDetail {
   id: string;
@@ -285,7 +287,13 @@ export default function PlayDetailScreen() {
         <Text style={styles.topBarTitle} numberOfLines={1}>
           {play.title}
         </Text>
-        <View style={styles.backButton} />
+        <Pressable
+          style={styles.backButton}
+          onPress={() => router.push(`/play/${playId}/edit`)}
+          hitSlop={12}
+        >
+          <Text style={styles.editIcon}>{'\u270E'}</Text>
+        </Pressable>
       </View>
 
       <ScrollView
@@ -352,7 +360,18 @@ export default function PlayDetailScreen() {
                     <View style={styles.avatarStack}>
                       {charAssignments.slice(0, 3).map((a, i) => {
                         const isSelf = a.user_id === currentUser?.id;
-                        return (
+                        const imgUri = isSelf ? resolveAvatarUrl(currentUser?.avatar_uri ?? null) : resolveAvatarUrl(a.avatar_uri);
+                        return imgUri ? (
+                          <Image
+                            key={a.user_id}
+                            source={{ uri: imgUri }}
+                            style={[
+                              styles.avatar,
+                              isSelf && styles.avatarMine,
+                              i > 0 && { marginLeft: -12 },
+                            ]}
+                          />
+                        ) : (
                           <View
                             key={a.user_id}
                             style={[
@@ -538,6 +557,10 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: colors.text,
     fontWeight: '600',
+  },
+  editIcon: {
+    fontSize: 18,
+    color: colors.textSecondary,
   },
   topBarTitle: {
     flex: 1,

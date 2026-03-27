@@ -64,6 +64,9 @@ export default function RehearsalScreen() {
   const [hideStageDirections, setHideStageDirections] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [contextMenuLine, setContextMenuLine] = useState<Line | null>(null);
+  const [contextMenuY, setContextMenuY] = useState(0);
+  const scrollOffsetRef = useRef(0);
+  const scrollTopRef = useRef(0);
   const [showCueLines, setShowCueLines] = useState(false);
   const [showBookmarksModal, setShowBookmarksModal] = useState(false);
   const [navFlashIndex, setNavFlashIndex] = useState<number | null>(null);
@@ -330,8 +333,8 @@ export default function RehearsalScreen() {
     const line = lines[index];
     if (!line) return;
 
-    // Never TTS stage directions — just advance
-    if (line.type === 'stage_direction') {
+    // Skip TTS for stage directions and hidden/skipped lines
+    if (line.type === 'stage_direction' || line.hidden) {
       advanceFrom(index);
       return;
     }
@@ -446,10 +449,11 @@ export default function RehearsalScreen() {
   }
 
   function handleLongPressLine(index: number) {
-    // Only allow context menu in idle, paused, or my_turn states
     if (state !== 'idle' && state !== 'paused' && state !== 'my_turn') return;
     const line = lines[index];
     if (!line) return;
+    const layoutY = lineRefs.current[line.id] ?? 0;
+    setContextMenuY(layoutY - scrollOffsetRef.current + scrollTopRef.current);
     setContextMenuLine(line);
   }
 
@@ -750,6 +754,9 @@ export default function RehearsalScreen() {
         ref={scrollRef}
         style={styles.scriptScroll}
         contentContainerStyle={styles.scriptContent}
+        onScroll={(e) => { scrollOffsetRef.current = e.nativeEvent.contentOffset.y; }}
+        scrollEventThrottle={100}
+        onLayout={(e) => { scrollTopRef.current = e.nativeEvent.layout.y; }}
       >
         {lines.map((line, index) => {
           if (hideStageDirections && line.type === 'stage_direction') return null;
@@ -891,11 +898,9 @@ export default function RehearsalScreen() {
                 <Pressable style={styles.pauseButton} onPress={handlePause}>
                   <Text style={styles.pauseButtonText}>| |</Text>
                 </Pressable>
-                <View style={styles.controlSpacer} />
-                <Text style={styles.speakingText}>
+                <Text style={styles.speakingText} numberOfLines={1}>
                   {currentLine?.character_name ?? 'Other'} is speaking...
                 </Text>
-                <View style={styles.controlSpacer} />
               </View>
             )}
 
@@ -904,11 +909,9 @@ export default function RehearsalScreen() {
                 <Pressable style={styles.pauseButton} onPress={handlePause}>
                   <Text style={styles.pauseButtonText}>| |</Text>
                 </Pressable>
-                <View style={styles.controlSpacer} />
-                <Text style={styles.speakingText}>
+                <Text style={styles.speakingText} numberOfLines={1}>
                   {currentLine?.character_name ?? 'Other'} is speaking...
                 </Text>
-                <View style={styles.controlSpacer} />
               </View>
             )}
 
@@ -942,7 +945,7 @@ export default function RehearsalScreen() {
       {contextMenuLine && (
         <>
           <Pressable style={styles.menuBackdrop} onPress={() => setContextMenuLine(null)} />
-          <View style={styles.contextMenu}>
+          <View style={[styles.contextMenu, { top: Math.max(60, Math.min(contextMenuY, 600)) }]}>
             <Pressable
               style={styles.menuItem}
               onPress={() => {
@@ -1418,6 +1421,7 @@ const styles = StyleSheet.create({
 
   // Speaking/loading state
   speakingText: {
+    flex: 1,
     fontSize: 14,
     color: colors.sage,
     fontWeight: '500',
@@ -1470,7 +1474,6 @@ const styles = StyleSheet.create({
   // Context menu
   contextMenu: {
     position: 'absolute',
-    top: '40%',
     left: '15%',
     right: '15%',
     zIndex: 51,

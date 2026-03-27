@@ -16,6 +16,7 @@ import { useRouter } from 'expo-router';
 import { useAuthStore, useIsAuthenticated } from '../src/store/useAuthStore';
 import { pickAvatarImage, uploadAvatarImage } from '../src/lib/avatar';
 import { colors, spacing, radii, shadows, typography } from '../src/lib/theme';
+import { Logo } from '../src/components/Logo';
 import { getInitials } from '../src/lib/utils';
 
 type Step = 'email' | 'code' | 'name';
@@ -118,8 +119,9 @@ export default function LoginScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View style={styles.content}>
-          {/* Wordmark */}
-          <Text style={styles.wordmark}>sides</Text>
+          <View style={{ marginBottom: spacing.xxxl, marginTop: spacing.xxxxl }}>
+            <Logo width={60} />
+          </View>
 
           {step === 'email' && (
             <>
@@ -282,13 +284,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     paddingHorizontal: spacing.xxxl,
-  },
-  wordmark: {
-    fontSize: 48,
-    fontWeight: '800',
-    color: colors.text,
-    letterSpacing: -1,
-    marginBottom: spacing.xxxxl,
   },
   heading: {
     fontSize: 22,

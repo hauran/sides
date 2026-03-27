@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
+  Image,
   StyleSheet,
   Pressable,
   ActivityIndicator,
@@ -15,20 +16,17 @@ import { useUserStore } from '../src/store/useUserStore';
 import { useIsAuthenticated } from '../src/store/useAuthStore';
 import { colors, spacing, radii, shadows } from '../src/lib/theme';
 import { useCoverImage } from '../src/hooks/useCoverImage';
+import { Logo } from '../src/components/Logo';
+import { resolveAvatarUrl } from '../src/lib/avatar';
+import { getInitials } from '../src/lib/utils';
 
 const POLL_INTERVAL = 5000;
 
-function HeroCard({ play, status, isInteractive, onPress, onEdit, renderStatusDetail }: {
+function HeroCard({ play, status, isInteractive, onPress, renderStatusDetail }: {
   play: any; status: string; isInteractive: boolean;
-  onPress: () => void; onEdit: () => void; renderStatusDetail: (play: any) => React.ReactNode;
+  onPress: () => void; renderStatusDetail: (play: any) => React.ReactNode;
 }) {
   const coverUrl = useCoverImage(play.id, play.cover_uri ?? null);
-
-  const editButton = status === 'ready' ? (
-    <Pressable style={styles.cardEditButton} onPress={onEdit} hitSlop={8}>
-      <Text style={styles.cardEditIcon}>{'\u270E'}</Text>
-    </Pressable>
-  ) : null;
 
   if (coverUrl) {
     return (
@@ -39,7 +37,6 @@ function HeroCard({ play, status, isInteractive, onPress, onEdit, renderStatusDe
           style={[styles.heroCardImage, status === 'processing' && styles.cardProcessing, status === 'failed' && styles.cardFailed]}
         >
           <View style={styles.heroOverlay}>
-            {editButton}
             <View style={styles.heroOverlayContent}>
               <Text style={styles.heroTitleOnImage}>{play.title}</Text>
               {status !== 'ready' && renderStatusDetail(play)}
@@ -50,14 +47,12 @@ function HeroCard({ play, status, isInteractive, onPress, onEdit, renderStatusDe
     );
   }
 
-  // No cover yet — show a warm gradient placeholder
   return (
     <Pressable
       style={[styles.heroCardPlaceholder]}
       onPress={() => isInteractive && onPress()}
       disabled={!isInteractive}
     >
-      {editButton}
       <Text style={styles.heroTitleOnImage}>{play.title}</Text>
       {status !== 'ready' && renderStatusDetail(play)}
     </Pressable>
@@ -70,7 +65,26 @@ export default function HomeScreen() {
   const loading = usePlayStore((s) => s.loading);
   const fetchPlays = usePlayStore((s) => s.fetchPlays);
   const fetchCurrentUser = useUserStore((s) => s.fetchCurrentUser);
+  const currentUser = useUserStore((s) => s.currentUser);
+  const avatarUrl = resolveAvatarUrl(currentUser?.avatar_uri ?? null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const topBar = (
+    <View style={styles.topRow}>
+      <Logo width={40} />
+      <Pressable onPress={() => router.push('/settings')} hitSlop={12}>
+        {avatarUrl ? (
+          <Image source={{ uri: avatarUrl }} style={styles.avatar} />
+        ) : (
+          <View style={styles.avatarFallback}>
+            <Text style={styles.avatarInitials}>
+              {currentUser?.name ? getInitials(currentUser.name) : ''}
+            </Text>
+          </View>
+        )}
+      </Pressable>
+    </View>
+  );
 
   const isAuthenticated = useIsAuthenticated();
 
@@ -157,12 +171,7 @@ export default function HomeScreen() {
   if (loading && playList.length === 0) {
     return (
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
-        <View style={styles.topRow}>
-          <Text style={styles.wordmark}>sides</Text>
-          <Pressable onPress={() => router.push('/settings')} hitSlop={12}>
-            <Text style={styles.gearIcon}>{'\u2699'}</Text>
-          </Pressable>
-        </View>
+        {topBar}
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.rose} />
         </View>
@@ -173,9 +182,17 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <View style={styles.topRow}>
-        <Text style={styles.wordmark}>sides</Text>
+        <Logo width={40} />
         <Pressable onPress={() => router.push('/settings')} hitSlop={12}>
-          <Text style={styles.gearIcon}>{'\u2699'}</Text>
+          {avatarUrl ? (
+            <Image source={{ uri: avatarUrl }} style={styles.avatar} />
+          ) : (
+            <View style={styles.avatarFallback}>
+              <Text style={styles.avatarInitials}>
+                {currentUser?.name ? getInitials(currentUser.name) : ''}
+              </Text>
+            </View>
+          )}
         </Pressable>
       </View>
 
@@ -197,7 +214,6 @@ export default function HomeScreen() {
                 status={status}
                 isInteractive={isInteractive}
                 onPress={() => router.push(`/play/${play.id}`)}
-                onEdit={() => router.push(`/play/${play.id}/edit`)}
                 renderStatusDetail={renderStatusDetail}
               />
             );
@@ -230,15 +246,23 @@ const styles = StyleSheet.create({
     paddingTop: spacing.xl,
     paddingBottom: spacing.sm,
   },
-  wordmark: {
-    fontSize: 32,
-    fontWeight: '800',
-    color: colors.text,
-    letterSpacing: -0.5,
+  avatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
   },
-  gearIcon: {
-    fontSize: 26,
-    color: colors.textSecondary,
+  avatarFallback: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.rose,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarInitials: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textInverse,
   },
 
   // Loading
@@ -345,23 +369,6 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     color: colors.textInverse,
     lineHeight: 30,
-  },
-
-  // Edit button on cards
-  cardEditButton: {
-    position: 'absolute',
-    top: spacing.md,
-    right: spacing.md,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  cardEditIcon: {
-    fontSize: 14,
-    color: colors.textInverse,
   },
 
   // Status styles

@@ -123,7 +123,11 @@ export function LineEditor({ line, characters, visible, onClose, onSave }: LineE
                 None
               </Text>
             </Pressable>
-            {characters.map(c => (
+            {[...characters].sort((a, b) => {
+              const aOrig = originalIds.has(a.id) ? 0 : 1;
+              const bOrig = originalIds.has(b.id) ? 0 : 1;
+              return aOrig - bOrig;
+            }).map(c => (
               <Pressable
                 key={c.id}
                 style={[styles.chip, selectedIds.has(c.id) && styles.chipSelected]}
