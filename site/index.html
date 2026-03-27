@@ -4,9 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sides — Run lines, anywhere</title>
-    <meta name="description" content="The rehearsal app for actors. Upload your script, hear your cue lines, practice your lines anywhere.">
+    <meta name="description" content="The rehearsal app for actors. Practice your lines.">
     <meta property="og:title" content="Sides — Run lines, anywhere">
-    <meta property="og:description" content="The rehearsal app for actors. Upload your script, hear your cue lines, practice your lines anywhere.">
+    <meta property="og:description" content="The rehearsal app for actors. Practice your lines.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://getsides.app">
     <meta name="twitter:card" content="summary">
@@ -37,6 +37,18 @@
             text-align: center;
         }
 
+        .brand {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo {
+            width: 80px;
+            height: 80px;
+        }
+
         .wordmark {
             font-size: 72px;
             font-weight: 800;
@@ -55,7 +67,6 @@
             margin-top: 36px;
             font-size: 17px;
             line-height: 1.65;
-            color: #2D2A26;
             max-width: 380px;
         }
 
@@ -64,15 +75,17 @@
             align-items: center;
             gap: 9px;
             margin-top: 44px;
-            padding: 10px 24px 10px 18px;
+            padding: 12px 28px 12px 20px;
             background: #111;
             color: #fff;
             text-decoration: none;
             border-radius: 10px;
+            -webkit-tap-highlight-color: transparent;
             transition: opacity 0.15s ease;
         }
 
         .app-store-badge:hover { opacity: 0.8; }
+        .app-store-badge:active { opacity: 0.7; }
 
         .app-store-badge svg { flex-shrink: 0; }
 
@@ -110,19 +123,33 @@
 
         @media (max-width: 480px) {
             main { padding: 48px 24px 40px; }
+            .logo { width: 84px; height: 84px; }
+            .tagline { font-size: 22px; }
+            .description { font-size: 20px; max-width: none; }
+            .badge-text span { font-size: 22px; }
+            .badge-text small { font-size: 12px; }
+            .app-store-badge { padding: 16px 36px 16px 26px; gap: 11px; }
+            .app-store-badge svg { width: 24px; height: 28px; }
+        }
+
+        @media (max-width: 360px) {
+            .logo { width: 68px; height: 68px; }
             .wordmark { font-size: 56px; letter-spacing: -2px; }
-            .tagline { font-size: 17px; }
-            .description { font-size: 16px; }
+            .tagline { font-size: 19px; }
+            .description { font-size: 18px; }
         }
     </style>
 </head>
 <body>
     <main>
-        <h1 class="wordmark">sides</h1>
+        <div class="brand">
+            <img class="logo" src="logo.svg" alt="" aria-hidden="true">
+            <h1 class="wordmark">sides</h1>
+        </div>
         <p class="tagline">Run lines, anywhere.</p>
         <p class="description">
-            Upload your script. Hear your cue lines read aloud.
-            Say yours back. Practice scenes on your own&thinsp;&mdash;&thinsp;no&nbsp;scene partner needed.
+            Practice scenes on your own.<br>
+            No scene partner needed.
         </p>
         <a href="https://apps.apple.com/app/sides" class="app-store-badge">
             <svg width="20" height="24" viewBox="0 0 18 22" fill="white" aria-hidden="true">
